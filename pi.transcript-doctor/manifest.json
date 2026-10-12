@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.duya07.transcript-doctor",
   "name": "Transcript Doctor",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "转录体检：检查每个会话的 .jsonl.layout 行偏移索引是否与 .jsonl 对得上，脏了就备份并清理，避免 host-core 报 stream did not contain valid UTF-8 并永久暂停持久化队列。纯本地字节比对，不调用模型。",
   "author": "duya07",
   "license": "MIT",
@@ -22,7 +22,7 @@
   "categories": [
     "utilities"
   ],
-  "changelog": "0.1.1：修复面板「确认：备份并删除」点了没反应——宿主 plugin.getDataPath 是 async，之前当同步值用会让 path.join 抛 TypeError；并给面板→插件调用加了 20s 超时，异常不再静默挂起。0.1.0：首个版本。面板列出每个会话的 jsonl 大小/记录数/索引头字节数/span 数/错位偏移数/落在多字节字符内部的偏移数，并显示 persistence.log 的 flush.paused 与 outbox 积压信号；支持备份并清理过期索引；提供 transcript_doctor agent 工具与低频后台自检（发现脏索引或持久化卡住时发原生通知）。",
+  "changelog": "0.2.0：新增自动清理（发现过期索引即备份并删除，默认关闭，需在设置里显式开启）、备份保留份数 backupKeep（默认 10，0 = 不限制，避免备份无限累积）、备份管理（面板列出/删除单份备份与一键清理旧备份；agent 工具新增 backups / prune_backups）。0.1.1：修复面板「确认：备份并删除」点了没反应——宿主 plugin.getDataPath 是 async，之前当同步值用会让 path.join 抛 TypeError；并给面板→插件调用加了 20s 超时，异常不再静默挂起。0.1.0：首个版本。面板列出每个会话的 jsonl 大小/记录数/索引头字节数/span 数/错位偏移数/落在多字节字符内部的偏移数，并显示 persistence.log 的 flush.paused 与 outbox 积压信号；支持备份并清理过期索引；提供 transcript_doctor agent 工具与低频后台自检（发现脏索引或持久化卡住时发原生通知）。",
   "safetyNotes": "只读 ~/.pi-desktop/sessions 下的 *.jsonl 与 *.jsonl.layout、logs/app/persistence.log 和 session-message-outbox.json。唯一的写操作是把 *.jsonl.layout / *.layout.tmp 复制到插件数据目录后删除原件；绝不触碰 .jsonl、.inflight.json 和 outbox。无网络请求、不调用模型、不自动执行代码。清理只在重启 PI-Desktop 后生效。",
   "main": "main.js",
   "ui": {
@@ -128,6 +128,18 @@
         "title": "发现问题时发系统通知",
         "type": "boolean",
         "default": true
+      },
+      {
+        "key": "autoCleanEnabled",
+        "title": "自动清理过期索引（发现即备份并删除）",
+        "type": "boolean",
+        "default": false
+      },
+      {
+        "key": "backupKeep",
+        "title": "备份保留份数（0 = 不限制，会一直累积）",
+        "type": "number",
+        "default": 10
       }
     ]
   },

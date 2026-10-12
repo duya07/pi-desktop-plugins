@@ -209,6 +209,17 @@
       <div id="signals" class="dim">加载中…</div>
     </section>
 
+    <section>
+      <h2>备份</h2>
+      <div id="backupMeta" class="dim">加载中…</div>
+      <div class="bar">
+        <button id="pruneBackupsBtn" type="button">清理旧备份</button>
+        <span class="note" id="backupNote"></span>
+      </div>
+      <ul class="plan" id="backupList"></ul>
+      <p class="hint">备份保留份数与自动清理开关在 设置 → 插件 → 转录体检 里调整。</p>
+    </section>
+
     <section id="confirmBox" class="hidden">
       <h2>确认清理</h2>
       <div id="confirmText"></div>
@@ -390,6 +401,66 @@
           note.textContent = String(err && err.message ? err.message : err);
           note.className = "note err";
         }
+        await loadBackups();
+      }
+
+      /* ---------------------------------------------------------- 备份管理 */
+
+      async function loadBackups() {
+        const meta = document.getElementById("backupMeta");
+        const list = document.getElementById("backupList");
+        try {
+          const data = await invoke("doctor.backups", {});
+          const items = data.backups || [];
+          const total = items.reduce((n, b) => n + b.bytes, 0);
+          meta.innerHTML =
+            `${items.length} 份 · ${fmtBytes(total)} · 保留 ${data.keep > 0 ? data.keep + " 份" : "不限"} · 自动清理 ${
+              data.autoCleanEnabled ? "已开" : "关闭"
+            }<br /><span class="dim">${escapeHtml(data.backupRoot || "")}</span>`;
+          list.innerHTML = "";
+          for (const b of items) {
+            const li = document.createElement("li");
+            li.innerHTML =
+              `<code>${escapeHtml(b.name)}</code> <span class="dim">${b.files} 个文件 · ${fmtBytes(b.bytes)}</span> ` +
+              `<button type="button" data-remove="${escapeHtml(b.name)}" style="padding:2px 8px;margin-left:6px">删除</button>`;
+            list.appendChild(li);
+          }
+          list.querySelectorAll("button[data-remove]").forEach((el) =>
+            el.addEventListener("click", () => void removeBackup(el.dataset.remove)),
+          );
+        } catch (err) {
+          meta.innerHTML = `<span class="err">${escapeHtml(String(err && err.message ? err.message : err))}</span>`;
+        }
+      }
+
+      async function removeBackup(name) {
+        const note = document.getElementById("backupNote");
+        note.className = "note";
+        note.textContent = "删除中…";
+        try {
+          const res = await invoke("doctor.backups.remove", { name });
+          note.textContent = `已删除 ${res.name}（${res.files} 个文件）`;
+          await loadBackups();
+        } catch (err) {
+          note.textContent = String(err && err.message ? err.message : err);
+          note.className = "note err";
+        }
+      }
+
+      async function pruneBackups() {
+        const note = document.getElementById("backupNote");
+        note.className = "note";
+        note.textContent = "清理中…";
+        try {
+          const res = await invoke("doctor.backups.prune", {});
+          note.textContent = res.pruned.length
+            ? `已删除 ${res.pruned.length} 份旧备份，保留 ${res.kept} 份`
+            : `没有需要清理的备份（保留 ${res.kept} 份）`;
+          await loadBackups();
+        } catch (err) {
+          note.textContent = String(err && err.message ? err.message : err);
+          note.className = "note err";
+        }
       }
 
       async function previewClean() {
@@ -440,6 +511,7 @@
       }
 
       document.getElementById("rescan").addEventListener("click", () => void refresh());
+      document.getElementById("pruneBackupsBtn").addEventListener("click", () => void pruneBackups());
       document.getElementById("clean").addEventListener("click", () => void previewClean());
       document.getElementById("confirmYes").addEventListener("click", () => void doClean());
       document.getElementById("confirmNo").addEventListener("click", () => {

@@ -23,7 +23,9 @@ Electron 侧把这条错误当作瞬态错误，于是 **`PersistenceOutbox.flus
 - **面板**：每个会话一行 —— 大小、记录数、索引头字节数 vs 实际字节数、span 数、错位偏移数、落在多字节字符内部的偏移数、是否有进行中的轮次（inflight）。
 - **信号**：`logs/app/persistence.log` 最近 15 分钟是否出现过 `session.persistence.flush.paused`；outbox 积压条数与按会话分布。
 - **清理**：勾选过期索引 → dry-run 预览清单 → 二次确认 → 备份到插件数据目录后删除。
-- **agent 工具** `transcript_doctor`：`scan` / `inspect` / `clean` / `verify`，让 agent 遇到该报错时能直接体检和清理（默认 dry-run，需显式 `confirm=true` 才删）。
+- **自动清理**（默认关闭）：后台自检发现过期索引就自动备份并删除，不必手动点；开启后仍会发通知告知清了多少、还剩多少。
+- **备份管理**：面板列出所有备份（时间 / 文件数 / 体积），可删单份、也可一键清理旧备份；`backupKeep` 控制保留份数（默认 10，0 = 不限制），每次清理后自动剪枝，避免备份无限累积。
+- **agent 工具** `transcript_doctor`：`scan` / `inspect` / `clean` / `verify` / `backups` / `prune_backups`，让 agent 遇到该报错时能直接体检、清理和整理备份（清理默认 dry-run，需显式 `confirm=true` 才删）。
 - **后台自检**：低频扫描，发现脏索引或持久化被暂停过就发一次原生通知（同一问题 30 分钟内不重复提醒）。
 
 ## 它做不到什么（重要）
@@ -69,6 +71,8 @@ Electron 侧把这条错误当作瞬态错误，于是 **`PersistenceOutbox.flus
 | `watchEnabled` | true | 后台自检开关 |
 | `watchIntervalMinutes` | 5 | 自检间隔 |
 | `notifyOnStale` | true | 发现问题时发系统通知 |
+| `autoCleanEnabled` | **false** | 自动清理过期索引（发现即备份并删除）。默认关——它会真的删文件 |
+| `backupKeep` | 10 | 备份保留份数；0 = 不限制（会一直累积） |
 
 ## 相关
 
@@ -76,4 +80,6 @@ Electron 侧把这条错误当作瞬态错误，于是 **`PersistenceOutbox.flus
 
 ## 变更
 
+- **0.2.0**：自动清理（默认关闭）、备份保留份数 `backupKeep`、备份管理（面板 + 工具 `backups` / `prune_backups`）。
+- **0.1.1**：修复面板「确认：备份并删除」点了没反应（宿主 `getDataPath` 是 async，被当同步值用）；面板调用加 20s 超时。
 - **0.1.0**：首个版本。面板 + 扫描 + 备份清理 + `transcript_doctor` 工具 + 低频后台自检。

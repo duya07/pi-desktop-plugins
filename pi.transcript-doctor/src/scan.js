@@ -399,6 +399,84 @@ function cleanLayouts(opts) {
   return { dryRun: false, deleted, failed, planned: plan, backupDir };
 }
 
+/* --------------------------------------------------------------- 备份管理 */
+
+/** 备份目录白名单：必须是备份根目录的直接子目录，且名字是安全字符。 */
+function assertBackupDir(backupRoot, dirPath) {
+  const resolved = path.resolve(dirPath);
+  if (path.dirname(resolved) !== path.resolve(backupRoot)) {
+    throw new Error("refused: not a direct child of the backup root");
+  }
+  if (!/^[0-9A-Za-z._-]+$/.test(path.basename(resolved))) {
+    throw new Error("refused: unexpected backup directory name");
+  }
+  return resolved;
+}
+
+/**
+ * 列出已有备份。备份目录名就是生成时的 ISO 时间戳（`:`/`.` 换成 `-`），
+ * 所以按名字倒序即"最新在前"，不需要额外取 mtime。
+ */
+function listBackups(backupRoot) {
+  const out = [];
+  let entries = [];
+  try {
+    entries = fs.readdirSync(backupRoot, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const dir = path.join(backupRoot, e.name);
+    let files = [];
+    try {
+      files = fs.readdirSync(dir).filter((n) => isLayoutFileName(n));
+    } catch {
+      /* 读不了就当空目录 */
+    }
+    let bytes = 0;
+    for (const f of files) {
+      try {
+        bytes += fs.statSync(path.join(dir, f)).size;
+      } catch {
+        /* 忽略单个文件 */
+      }
+    }
+    out.push({ name: e.name, dir, files: files.length, bytes });
+  }
+  out.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+  return out;
+}
+
+/** 只保留最近 keep 份备份，更旧的删掉。keep <= 0 表示不清理。 */
+function pruneBackups(backupRoot, keep) {
+  const k = Number(keep);
+  if (!Number.isFinite(k) || k <= 0) return { pruned: [], failed: [], kept: null };
+  const all = listBackups(backupRoot);
+  const doomed = all.slice(Math.max(0, Math.trunc(k)));
+  const pruned = [];
+  const failed = [];
+  for (const b of doomed) {
+    try {
+      assertBackupDir(backupRoot, b.dir);
+      fs.rmSync(b.dir, { recursive: true, force: true });
+      pruned.push({ name: b.name, files: b.files, bytes: b.bytes });
+    } catch (err) {
+      failed.push({ name: b.name, error: String(err && err.message ? err.message : err) });
+    }
+  }
+  return { pruned, failed, kept: Math.min(all.length, Math.max(0, Math.trunc(k))) };
+}
+
+/** 删掉指定的一份备份（按目录名）。 */
+function removeBackup(backupRoot, name) {
+  const dir = path.join(backupRoot, String(name || ""));
+  assertBackupDir(backupRoot, dir);
+  const files = fs.readdirSync(dir).length;
+  fs.rmSync(dir, { recursive: true, force: true });
+  return { name: String(name), files };
+}
+
 module.exports = {
   DATA_DIR,
   SESSIONS_DIR,
@@ -407,9 +485,13 @@ module.exports = {
   LAYOUT_CACHE_MIN_LEN,
   isLayoutFileName,
   assertDeletable,
+  assertBackupDir,
   inspectSession,
   scanAll,
   readSignals,
   cleanLayouts,
+  listBackups,
+  pruneBackups,
+  removeBackup,
   listSessions,
 };

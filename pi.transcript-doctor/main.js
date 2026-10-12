@@ -30,6 +30,8 @@ const TOOL_NAME = "transcript_doctor";
 const SERVICE_ID = "watchdog";
 
 const DEFAULT_WATCH_MINUTES = 5;
+/** 默认保留的备份份数（0 = 不限制，会一直累积） */
+const DEFAULT_BACKUP_KEEP = 10;
 /** 等 host-core 起来再自检，避免和启动争 IO */
 const STARTUP_DELAY_MS = 15000;
 /** 同一个问题指纹在该窗口内只提醒一次 */
@@ -46,13 +48,23 @@ async function readSettings() {
   try {
     const s = (await pi.plugin.getSettings()) || {};
     const minutes = Number(s.watchIntervalMinutes);
+    const keep = Number(s.backupKeep);
     return {
       watchEnabled: s.watchEnabled !== false,
       notifyOnStale: s.notifyOnStale !== false,
       watchIntervalMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_WATCH_MINUTES,
+      // 自动清理默认关闭：它会真的删文件，必须由用户显式打开
+      autoCleanEnabled: s.autoCleanEnabled === true,
+      backupKeep: Number.isFinite(keep) && keep >= 0 ? Math.trunc(keep) : DEFAULT_BACKUP_KEEP,
     };
   } catch {
-    return { watchEnabled: true, notifyOnStale: true, watchIntervalMinutes: DEFAULT_WATCH_MINUTES };
+    return {
+      watchEnabled: true,
+      notifyOnStale: true,
+      watchIntervalMinutes: DEFAULT_WATCH_MINUTES,
+      autoCleanEnabled: false,
+      backupKeep: DEFAULT_BACKUP_KEEP,
+    };
   }
 }
 
@@ -93,21 +105,41 @@ function summarizeForAgent(result) {
   };
 }
 
-async function backupDirNow() {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  // 宿主实现是 `getDataPath: async () => dataPath()`，必须 await：
-  // 当同步值用会拿到 Promise，path.join 会抛 TypeError 且面板侧只表现为“点了没反应”。
-  const base = await pi.plugin.getDataPath();
-  return path.join(base, "backups", stamp);
+/**
+ * 备份根目录（插件数据目录下）。
+ * 宿主实现是 `getDataPath: async () => dataPath()`，必须 await：
+ * 当同步值用会拿到 Promise，path.join 会抛 TypeError，面板侧只表现为"点了没反应"。
+ */
+async function backupRoot() {
+  return path.join(await pi.plugin.getDataPath(), "backups");
 }
 
-/** 备份 + 删除；dryRun 时不落盘 */
+async function backupDirNow() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return path.join(await backupRoot(), stamp);
+}
+
+/**
+ * 备份 + 删除；dryRun 时不落盘。
+ * 真删之后按 backupKeep 剪枝，避免备份无限累积。
+ */
 async function doClean(sessionIds, dryRun) {
-  return scan.cleanLayouts({
+  const result = scan.cleanLayouts({
     sessionIds: sessionIds && sessionIds.length ? sessionIds : undefined,
     dryRun,
     backupDir: dryRun ? null : await backupDirNow(),
   });
+  if (!dryRun) {
+    const s = await readSettings();
+    if (s.backupKeep > 0) {
+      try {
+        result.prune = scan.pruneBackups(await backupRoot(), s.backupKeep);
+      } catch (err) {
+        result.prune = { pruned: [], failed: [], error: String(err && err.message ? err.message : err) };
+      }
+    }
+  }
+  return result;
 }
 
 function staleFingerprint(result) {
@@ -133,22 +165,39 @@ async function watchdogTick(log, settings) {
     return;
   }
 
+  // 自动清理：只动 stale（behind / healthy 不碰），删完按 backupKeep 剪枝
+  let autoCleaned = 0;
+  if (settings.autoCleanEnabled && result.stale > 0) {
+    const ids = result.sessions.filter((s) => s.status === "stale").map((s) => s.sessionId);
+    try {
+      const cleaned = await doClean(ids, false);
+      autoCleaned = cleaned.deleted.length;
+      const pruned = cleaned.prune ? cleaned.prune.pruned.length : 0;
+      log(`auto-clean: deleted=${autoCleaned} failed=${cleaned.failed.length} pruned=${pruned}`);
+      result = doScan(); // 清完重扫，通知里报的是清理后的真实状态
+    } catch (err) {
+      log(`auto-clean failed: ${err && err.message ? err.message : err}`);
+    }
+  }
+
   const staleCount = result.stale;
   const stalled = result.signals.flushPausedRecent;
 
-  if (!staleCount && !stalled) {
+  if (!staleCount && !stalled && !autoCleaned) {
     lastNotifyFingerprint = "";
     return;
   }
 
-  const fingerprint = `${staleCount}|${stalled}|${staleFingerprint(result)}`;
+  const fingerprint = autoCleaned
+    ? `auto|${autoCleaned}|${staleCount}`
+    : `${staleCount}|${stalled}|${staleFingerprint(result)}`;
   const now = Date.now();
   if (fingerprint === lastNotifyFingerprint && now - lastNotifyAt < NOTIFY_COOLDOWN_MS) return;
   lastNotifyFingerprint = fingerprint;
   lastNotifyAt = now;
 
   if (!settings.notifyOnStale) {
-    log(`stale=${staleCount} flushPaused=${stalled} (notification suppressed)`);
+    log(`stale=${staleCount} flushPaused=${stalled} autoCleaned=${autoCleaned} (notification suppressed)`);
     return;
   }
 
@@ -159,15 +208,25 @@ async function watchdogTick(log, settings) {
     /* 保持中文 */
   }
 
-  const title = zh ? "转录索引需要处理" : "Transcript index needs attention";
-  const parts = [];
-  if (staleCount) {
-    parts.push(zh ? `${staleCount} 个会话的 .jsonl.layout 已过期` : `${staleCount} session(s) have a stale .jsonl.layout`);
+  let title;
+  let body;
+  if (autoCleaned) {
+    title = zh ? "已自动清理过期索引" : "Stale indexes cleaned automatically";
+    const extra = staleCount ? (zh ? `；仍有 ${staleCount} 个待处理` : `; ${staleCount} still pending`) : "";
+    body = zh
+      ? `已备份并清理 ${autoCleaned} 个 .jsonl.layout${extra}。重启 PI-Desktop 后才会重建干净的索引。`
+      : `Backed up and removed ${autoCleaned} .jsonl.layout file(s)${extra}. Restart PI-Desktop to rebuild clean indexes.`;
+  } else {
+    title = zh ? "转录索引需要处理" : "Transcript index needs attention";
+    const parts = [];
+    if (staleCount) {
+      parts.push(zh ? `${staleCount} 个会话的 .jsonl.layout 已过期` : `${staleCount} session(s) have a stale .jsonl.layout`);
+    }
+    if (stalled) {
+      parts.push(zh ? "持久化队列近期被暂停过" : "the persistence queue was paused recently");
+    }
+    body = parts.join("；") + (zh ? "。打开 Transcript Doctor 面板可备份并清理。" : ". Open the Transcript Doctor panel to back up and clean.");
   }
-  if (stalled) {
-    parts.push(zh ? "持久化队列近期被暂停过" : "the persistence queue was paused recently");
-  }
-  const body = parts.join("；") + (zh ? "。打开 Transcript Doctor 面板可备份并清理。" : ". Open the Transcript Doctor panel to back up and clean.");
 
   log(`notify: stale=${staleCount} flushPaused=${stalled}`);
   try {
@@ -234,10 +293,12 @@ async function onLoad() {
       const res = await doClean(ids, false);
       const n = res.deleted ? res.deleted.length : 0;
       const f = res.failed ? res.failed.length : 0;
+      const pruned = res.prune && res.prune.pruned ? res.prune.pruned.length : 0;
+      const pruneNote = pruned ? `；顺带清掉 ${pruned} 份旧备份` : "";
       await pi.ui.showToast(
         f
-          ? `清理完成 ${n} 个，失败 ${f} 个（备份：${res.backupDir}）`
-          : `已清理 ${n} 个索引并备份到 ${res.backupDir}；重启 PI 后生效`,
+          ? `清理完成 ${n} 个，失败 ${f} 个${pruneNote}（备份：${res.backupDir}）`
+          : `已清理 ${n} 个索引并备份到 ${res.backupDir}${pruneNote}；重启 PI 后生效`,
       );
     },
   });
@@ -249,7 +310,8 @@ async function onLoad() {
       "宿主 host-core 会把每条消息的行偏移缓存在 .jsonl 旁边；当转录被原地重写（流式回复落地、子代理 Task 状态更新）而缓存未失效时，偏移会漂移，" +
       "宿主 seek 到行中间或多字节 UTF-8 字符内部，报 \"stream did not contain valid UTF-8\" 并永久暂停持久化队列（消息积压在 session-message-outbox.json）。" +
       "action=scan 列出所有会话的健康状况（只返回有问题的会话，结果很小）；action=inspect 看单个会话的完整字段（需要 sessionId）；" +
-      "action=clean 备份并删除过期索引（默认 dry-run，必须显式 confirm=true 才真的删除）；action=verify 返回每个会话一行摘要。" +
+      "action=clean 备份并删除过期索引（默认 dry-run，必须显式 confirm=true 才真的删除）；action=verify 返回每个会话一行摘要；" +
+      "action=backups 列出已有备份（备份会累积，可据此清理）；action=prune_backups 只保留最近 keep 份备份（省略 keep 用设置里的 backupKeep）。" +
       "注意：清理只让『下一次重启』干净，宿主内存里的旧索引必须重启进程才会丢弃；本工具不重启宿主、不改 .jsonl 内容、不调用模型。",
     risk: "medium",
     schema: {
@@ -257,7 +319,7 @@ async function onLoad() {
       properties: {
         action: {
           type: "string",
-          enum: ["scan", "inspect", "clean", "verify"],
+          enum: ["scan", "inspect", "clean", "verify", "backups", "prune_backups"],
           description: "要执行的操作",
         },
         sessionId: {
@@ -267,6 +329,10 @@ async function onLoad() {
         confirm: {
           type: "boolean",
           description: "clean 必须显式 true 才真正删除；省略或 false 时只返回将要删除的清单（dry-run）",
+        },
+        keep: {
+          type: "integer",
+          description: "prune_backups 保留的备份份数；省略则用设置里的 backupKeep",
         },
       },
       required: ["action"],
@@ -316,6 +382,33 @@ async function onLoad() {
           failed: result.failed,
           backupDir: result.backupDir,
           hint: "索引已清理；宿主内存里的旧索引仍在，重启 PI 后才会重建干净的索引。",
+        };
+      }
+
+      if (action === "backups") {
+        const root = await backupRoot();
+        const list = scan.listBackups(root);
+        return {
+          ok: true,
+          backupRoot: root,
+          count: list.length,
+          totalBytes: list.reduce((n, b) => n + b.bytes, 0),
+          backups: list.slice(0, 20).map((b) => ({ name: b.name, files: b.files, bytes: b.bytes })),
+        };
+      }
+
+      if (action === "prune_backups") {
+        const s = await readSettings();
+        const raw = args && args.keep;
+        const keep = Number.isFinite(Number(raw)) ? Math.trunc(Number(raw)) : s.backupKeep;
+        const res = scan.pruneBackups(await backupRoot(), keep);
+        return {
+          ok: true,
+          keep,
+          pruned: res.pruned.map((p) => p.name),
+          kept: res.kept,
+          failed: res.failed,
+          hint: keep > 0 ? undefined : "keep<=0 表示不清理；传一个正数才会删旧备份。",
         };
       }
 
@@ -399,13 +492,34 @@ async function onPanelInvoke(channel, payload) {
     const dryRun = !(payload && payload.confirm === true);
     return await doClean(sessionIds, dryRun);
   }
+  if (channel === "doctor.backups") {
+    const root = await backupRoot();
+    const s = await readSettings();
+    return {
+      backupRoot: root,
+      keep: s.backupKeep,
+      autoCleanEnabled: s.autoCleanEnabled,
+      backups: scan.listBackups(root),
+    };
+  }
+  if (channel === "doctor.backups.remove") {
+    const name = payload && payload.name ? String(payload.name) : "";
+    if (!name) throw new Error("doctor.backups.remove requires name");
+    return scan.removeBackup(await backupRoot(), name);
+  }
+  if (channel === "doctor.backups.prune") {
+    const s = await readSettings();
+    const raw = payload && payload.keep;
+    const keep = Number.isFinite(Number(raw)) ? Math.trunc(Number(raw)) : s.backupKeep;
+    return scan.pruneBackups(await backupRoot(), keep);
+  }
   if (channel === "doctor.paths") {
     return {
       dataDir: scan.DATA_DIR,
       sessionsDir: scan.SESSIONS_DIR,
       persistenceLog: scan.PERSISTENCE_LOG,
       outboxFile: scan.OUTBOX_FILE,
-      backupRoot: path.join(await pi.plugin.getDataPath(), "backups"),
+      backupRoot: await backupRoot(),
       layoutCacheMinLen: scan.LAYOUT_CACHE_MIN_LEN,
     };
   }
