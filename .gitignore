@@ -1,0 +1,16 @@
+# 打包产物（用 pnpm pi-plugin pack 生成，走 GitHub Releases 分发）
+dist/
+*.piplug
+
+# 依赖与缓存
+node_modules/
+.pnpm-store/
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.duya07.think-zh",
+  "name": "中文可见推理指引",
+  "version": "0.2.0",
+  "description": "每轮追加明确的中文思考区/可见推理文字语言要求；保留原提示，不翻译、不出网，不改变模型推理档位。",
+  "author": "duya07",
+  "license": "MIT",
+  "homepage": "https://github.com/duya07/pi-desktop-plugins",
+  "main": "main.js",
+  "contributes": {
+    "agentExtensions": [
+      "extension-v2.js"
+    ]
+  },
+  "permissions": [
+    "agent.extension"
+  ],
+  "engines": {
+    "piDesktop": ">=0.18.0"
+  },
+  "activationEvents": [
+    "onStartup"
+  ]
+}

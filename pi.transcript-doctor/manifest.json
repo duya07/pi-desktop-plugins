@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.duya07.transcript-doctor",
+  "name": "Transcript Doctor",
+  "version": "0.1.0",
+  "description": "转录体检：检查每个会话的 .jsonl.layout 行偏移索引是否与 .jsonl 对得上，脏了就备份并清理，避免 host-core 报 stream did not contain valid UTF-8 并永久暂停持久化队列。纯本地字节比对，不调用模型。",
+  "author": "duya07",
+  "license": "MIT",
+  "homepage": "https://github.com/duya07/pi-desktop-plugins",
+  "i18n": {
+    "en": {
+      "name": "Transcript Doctor",
+      "description": "Checks every session's .jsonl.layout line-offset cache against its .jsonl, and backs up + clears the stale ones before host-core starts reporting \"stream did not contain valid UTF-8\" and stalls the persistence queue. Pure local byte comparison, no model calls.",
+      "safetyNotes": "Reads only ~/.pi-desktop/sessions/*.jsonl and *.jsonl.layout, logs/app/persistence.log and session-message-outbox.json. The only write is copying *.jsonl.layout / *.layout.tmp into the plugin data directory and then deleting the originals; .jsonl, .inflight.json and the outbox are never touched. No network requests, no model calls, no automatic code execution. Cleaning only takes effect after PI-Desktop restarts, because the host keeps the stale index in memory."
+    },
+    "zh-CN": {
+      "name": "转录体检",
+      "description": "检查每个会话的 .jsonl.layout 行偏移索引是否与 .jsonl 对得上，脏了就备份并清理，避免 host-core 报 stream did not contain valid UTF-8 并永久暂停持久化队列。纯本地字节比对，不调用模型。",
+      "safetyNotes": "只读 ~/.pi-desktop/sessions 下的 *.jsonl 与 *.jsonl.layout、logs/app/persistence.log 和 session-message-outbox.json。唯一的写操作是把 *.jsonl.layout / *.layout.tmp 复制到插件数据目录后删除原件；绝不触碰 .jsonl、.inflight.json 和 outbox。无网络请求、不调用模型、不自动执行代码。清理只在重启 PI-Desktop 后生效——宿主把旧索引留在内存里，插件无法让它即时失效。"
+    }
+  },
+  "categories": [
+    "utilities"
+  ],
+  "changelog": "0.1.0：首个版本。面板列出每个会话的 jsonl 大小/记录数/索引头字节数/span 数/错位偏移数/落在多字节字符内部的偏移数，并显示 persistence.log 的 flush.paused 与 outbox 积压信号；支持备份并清理过期索引；提供 transcript_doctor agent 工具与低频后台自检（发现脏索引或持久化卡住时发原生通知）。",
+  "safetyNotes": "只读 ~/.pi-desktop/sessions 下的 *.jsonl 与 *.jsonl.layout、logs/app/persistence.log 和 session-message-outbox.json。唯一的写操作是把 *.jsonl.layout / *.layout.tmp 复制到插件数据目录后删除原件；绝不触碰 .jsonl、.inflight.json 和 outbox。无网络请求、不调用模型、不自动执行代码。清理只在重启 PI-Desktop 后生效。",
+  "main": "main.js",
+  "ui": {
+    "panel": "renderer/index.html",
+    "title": {
+      "en": "Transcript Doctor",
+      "zh-CN": "转录体检"
+    },
+    "width": 1040,
+    "height": 700
+  },
+  "contributes": {
+    "services": [
+      {
+        "id": "watchdog",
+        "label": "转录索引自检"
+      }
+    ],
+    "commands": [
+      {
+        "id": "transcript-doctor.open",
+        "title": "转录体检：打开面板",
+        "keywords": [
+          "transcript",
+          "layout",
+          "utf8",
+          "持久化",
+          "索引",
+          "体检"
+        ],
+        "category": "Utilities"
+      },
+      {
+        "id": "transcript-doctor.scan",
+        "title": "转录体检：立即扫描",
+        "keywords": [
+          "transcript",
+          "scan",
+          "扫描"
+        ],
+        "category": "Utilities"
+      },
+      {
+        "id": "transcript-doctor.clean",
+        "title": "转录体检：备份并清理过期索引",
+        "keywords": [
+          "transcript",
+          "clean",
+          "清理",
+          "备份"
+        ],
+        "category": "Utilities"
+      }
+    ],
+    "agentTools": [
+      {
+        "name": "transcript_doctor",
+        "description": "体检 PI-Desktop 的会话转录索引（~/.pi-desktop/sessions/*.jsonl.layout）。宿主 host-core 把每条消息的行偏移缓存在 .jsonl 旁边；转录被原地重写（流式回复落地、子代理 Task 状态更新）而缓存未失效时偏移会漂移，宿主 seek 到行中间或多字节 UTF-8 字符内部，报 stream did not contain valid UTF-8 并永久暂停持久化队列（消息积压在 session-message-outbox.json）。action=scan 列出有问题的会话（结果很小）；action=inspect 看单个会话完整字段（需要 sessionId）；action=clean 备份并删除过期索引（默认 dry-run，必须 confirm=true 才真的删除）；action=verify 返回每个会话一行摘要。清理只让下一次重启干净，宿主内存里的旧索引必须重启进程才会丢弃；本工具不重启宿主、不改 .jsonl 内容、不调用模型。",
+        "risk": "medium",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "scan",
+                "inspect",
+                "clean",
+                "verify"
+              ],
+              "description": "要执行的操作"
+            },
+            "sessionId": {
+              "type": "string",
+              "description": "inspect 必填；clean 可选，限定只清理该会话"
+            },
+            "confirm": {
+              "type": "boolean",
+              "description": "clean 必须显式 true 才真正删除；省略或 false 时只返回将要删除的清单（dry-run）"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    ],
+    "settings": [
+      {
+        "key": "watchEnabled",
+        "title": "后台自检（每 N 分钟扫一次）",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "watchIntervalMinutes",
+        "title": "自检间隔（分钟）",
+        "type": "number",
+        "default": 5
+      },
+      {
+        "key": "notifyOnStale",
+        "title": "发现问题时发系统通知",
+        "type": "boolean",
+        "default": true
+      }
+    ]
+  },
+  "permissions": [
+    "ui.panel",
+    "background.service",
+    "notify",
+    "agent.tool.register"
+  ],
+  "engines": {
+    "piDesktop": ">=0.14.0"
+  },
+  "activationEvents": [
+    "onCommand:transcript-doctor.open",
+    "onCommand:transcript-doctor.scan",
+    "onCommand:transcript-doctor.clean",
+    "onStartup"
+  ]
+}

@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="pi-plugin-chrome" content="v2" />
+    <title>转录体检</title>
+    <script>
+      /*
+       * 外观预绘：在任何 CSS 生效前回放上次的 data-base / lang，避免首帧闪深色。
+       * 这同时决定了宿主窗口控制胶囊的配色 —— 宿主按 body 的 computed 背景色
+       * 设置 --pi-plugin-panel-page-background/foreground，且只在初始化读一次；
+       * 首帧若是深色，胶囊前景就会被定成浅色，切到浅色面板后右上角按钮发虚。
+       */
+      (function () {
+        var KEY = "io.github.duya07.transcript-doctor.appearance.v1";
+        var root = document.documentElement;
+        function prefersLight() {
+          try {
+            return window.matchMedia("(prefers-color-scheme: light)").matches;
+          } catch (e) {
+            return true;
+          }
+        }
+        function resolveBase(base) {
+          return base === "light" || base === "dark" ? base : prefersLight() ? "light" : "dark";
+        }
+        function resolveLocale(locale) {
+          return String(locale || "").toLowerCase().indexOf("zh") === 0 ? "zh-CN" : "en";
+        }
+        function apply(appearance) {
+          var a = appearance || {};
+          var base = resolveBase(a.base);
+          var locale = resolveLocale(a.locale);
+          root.dataset.base = base;
+          root.dataset.lang = locale === "zh-CN" ? "zh" : "en";
+          root.lang = locale;
+        }
+        window.__tdAppearance = {
+          key: KEY,
+          apply: apply,
+          resolveBase: resolveBase,
+          resolveLocale: resolveLocale,
+        };
+        var cached = null;
+        try {
+          cached = JSON.parse(window.localStorage.getItem(KEY) || "null");
+        } catch (e) {
+          cached = null;
+        }
+        apply(cached || { base: null, locale: navigator.language });
+      })();
+    </script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #181818;
+        --surface: #212121;
+        --surface-2: #262626;
+        --fg: #ffffff;
+        --muted: color-mix(in oklab, #ffffff 52%, transparent);
+        --border: color-mix(in oklab, #ffffff 10%, transparent);
+        --accent: #ffffff;
+        --ok: #4ec9a8;
+        --warn: #e2b93b;
+        --bad: #ef6b6b;
+      }
+      :root[data-base="light"] {
+        color-scheme: light;
+        --bg: #ffffff;
+        --surface: #f9f9f9;
+        --surface-2: #f2f2f2;
+        --fg: #1a1c1f;
+        --muted: #5d5d5d;
+        --border: color-mix(in oklab, #1a1c1f 12%, transparent);
+        --accent: #1a1c1f;
+        --ok: #1a7f5f;
+        --warn: #8a6a00;
+        --bad: #b03030;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: calc(var(--pi-plugin-titlebar-height, 46px) + 8px) 18px 24px;
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      header h1 {
+        margin: 0 0 2px;
+        font-size: 17px;
+        font-weight: 580;
+        letter-spacing: -0.01em;
+      }
+      .sub { margin: 0 0 14px; color: var(--muted); }
+      .bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      button {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 7px 12px;
+        background: var(--surface);
+        color: var(--fg);
+        font: inherit;
+        cursor: pointer;
+        transition: opacity 150ms ease;
+      }
+      button:hover:not(:disabled) { opacity: 0.82; }
+      button:disabled { opacity: 0.45; cursor: default; }
+      button.primary { background: var(--accent); color: var(--bg); }
+      button.danger { border-color: color-mix(in oklab, var(--bad) 55%, transparent); color: var(--bad); }
+      button:focus-visible {
+        outline: 2px solid color-mix(in oklab, var(--accent) 58%, transparent);
+        outline-offset: 2px;
+      }
+      .note { color: var(--muted); }
+      .err { color: var(--bad); }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-variant-numeric: tabular-nums;
+      }
+      th, td {
+        text-align: left;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+      th { color: var(--muted); font-weight: 520; font-size: 12px; }
+      td.num, th.num { text-align: right; }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 12px;
+      }
+      .badge {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        border: 1px solid var(--border);
+      }
+      .badge.healthy { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 50%, transparent); }
+      .badge.stale { color: var(--bad); border-color: color-mix(in oklab, var(--bad) 50%, transparent); }
+      .badge.behind { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 50%, transparent); }
+      .badge.no-cache { color: var(--muted); }
+      .badge.error { color: var(--bad); border-color: color-mix(in oklab, var(--bad) 50%, transparent); }
+      .dim { color: var(--muted); }
+      section {
+        margin-top: 18px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+      section h2 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        font-weight: 560;
+        color: var(--muted);
+      }
+      ul { margin: 0; padding-left: 18px; }
+      .hidden { display: none; }
+      .plan {
+        margin: 8px 0 10px;
+        max-height: 160px;
+        overflow: auto;
+      }
+      .hint { color: var(--muted); margin: 8px 0 0; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>转录体检</h1>
+      <p class="sub" id="sub">加载中…</p>
+    </header>
+
+    <div class="bar">
+      <button id="rescan" type="button">重新扫描</button>
+      <button id="clean" class="danger" type="button" disabled>备份并清理选中的过期索引</button>
+      <span class="note" id="note"></span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 28px"></th>
+          <th>会话</th>
+          <th>状态</th>
+          <th class="num">jsonl 字节</th>
+          <th class="num">记录</th>
+          <th class="num">索引头</th>
+          <th class="num">span</th>
+          <th class="num">错位</th>
+          <th class="num">字符内</th>
+          <th>备注</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <section>
+      <h2>持久化信号</h2>
+      <div id="signals" class="dim">加载中…</div>
+    </section>
+
+    <section id="confirmBox" class="hidden">
+      <h2>确认清理</h2>
+      <div id="confirmText"></div>
+      <ul class="plan" id="planList"></ul>
+      <div class="bar">
+        <button id="confirmYes" class="danger" type="button">确认：备份并删除</button>
+        <button id="confirmNo" type="button">取消</button>
+      </div>
+      <p class="hint">
+        只会删除 <code>*.jsonl.layout</code> / <code>*.layout.tmp</code>，删除前先复制到插件数据目录。
+        清理后必须重启 PI-Desktop 才会生效——宿主把旧索引留在内存里。
+      </p>
+    </section>
+
+    <section id="resultBox" class="hidden">
+      <h2>清理结果</h2>
+      <div id="resultText"></div>
+    </section>
+
+    <script>
+      const bridge = window.pluginBridge;
+      let latest = null;
+      let pendingIds = [];
+
+      async function invoke(channel, payload) {
+        if (!bridge || typeof bridge.invoke !== "function") {
+          throw new Error("pluginBridge 不可用（需在 PI-Desktop 面板中打开）");
+        }
+        return bridge.invoke(channel, payload);
+      }
+
+      function escapeHtml(s) {
+        return String(s == null ? "" : s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function fmtBytes(n) {
+        if (typeof n !== "number" || !Number.isFinite(n)) return "—";
+        if (n < 1024) return n + " B";
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KiB";
+        return (n / 1024 / 1024).toFixed(2) + " MiB";
+      }
+
+      function shortId(id) {
+        return id.length > 12 ? id.slice(0, 8) + "…" : id;
+      }
+
+      function applyAppearance(appearance) {
+        const boot = window.__tdAppearance;
+        const a = appearance || {};
+        if (!boot) {
+          document.documentElement.dataset.base =
+            a.base === "light" || a.base === "dark"
+              ? a.base
+              : window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          return;
+        }
+        boot.apply(a);
+        try {
+          window.localStorage.setItem(boot.key, JSON.stringify({ base: a.base, locale: a.locale }));
+        } catch (e) {
+          /* 无 localStorage 时忽略：只影响下次首帧预绘 */
+        }
+      }
+
+      function selectedIds() {
+        return [...document.querySelectorAll("input[type=checkbox][data-session]:checked")].map(
+          (el) => el.dataset.session,
+        );
+      }
+
+      function updateCleanButton() {
+        const n = selectedIds().length;
+        const btn = document.getElementById("clean");
+        btn.disabled = n === 0;
+        btn.textContent = n
+          ? `备份并清理选中的 ${n} 个过期索引`
+          : "备份并清理选中的过期索引";
+      }
+
+      function render(data) {
+        latest = data;
+        document.getElementById("sub").textContent =
+          `${data.total} 个会话 · ${data.healthy} 健康 · ${data.behind || 0} 缓存落后 · ${data.stale} 索引过期 · 扫描于 ` +
+          new Date(data.scannedAt).toLocaleTimeString();
+
+        const tbody = document.getElementById("rows");
+        tbody.innerHTML = "";
+        for (const s of data.sessions) {
+          const tr = document.createElement("tr");
+          const stale = s.status === "stale";
+          const hdr =
+            s.headerBytes == null
+              ? "—"
+              : s.headerMatches
+                ? "一致"
+                : `${fmtBytes(s.headerBytes)} ≠ ${fmtBytes(s.jsonlBytes)}`;
+          tr.innerHTML = `
+            <td>${stale ? `<input type="checkbox" data-session="${escapeHtml(s.sessionId)}" />` : ""}</td>
+            <td><code title="${escapeHtml(s.sessionId)}">${escapeHtml(shortId(s.sessionId))}</code>${
+              s.hasInflight ? ' <span class="dim" title="该会话有进行中的轮次，别在此刻重启">·进行中</span>' : ""
+            }</td>
+            <td><span class="badge ${escapeHtml(s.status)}">${escapeHtml(s.status)}</span></td>
+            <td class="num">${fmtBytes(s.jsonlBytes)}</td>
+            <td class="num">${s.lines == null ? "—" : s.lines}</td>
+            <td class="num">${escapeHtml(hdr)}</td>
+            <td class="num">${s.spans || "—"}</td>
+            <td class="num">${s.misaligned ? `<span class="err">${s.misaligned}</span>` : "0"}</td>
+            <td class="num">${s.midUTF8 ? `<span class="err">${s.midUTF8}</span>` : "0"}</td>
+            <td class="dim">${escapeHtml(s.note || "")}</td>
+          `;
+          tbody.appendChild(tr);
+        }
+        tbody.querySelectorAll("input[type=checkbox]").forEach((el) =>
+          el.addEventListener("change", updateCleanButton),
+        );
+        updateCleanButton();
+
+        const sig = data.signals || {};
+        const parts = [];
+        parts.push(
+          sig.flushPausedRecent
+            ? `<span class="err">持久化队列近期被暂停过</span>（最后一次 ${escapeHtml(sig.flushPausedLastAt || "?")}）`
+            : "持久化队列正常（最近 15 分钟没有 flush.paused）",
+        );
+        parts.push(`outbox 积压 ${sig.outboxEntries} 条 / ${fmtBytes(sig.outboxBytes)}`);
+        if (sig.outboxBySession && sig.outboxBySession.length) {
+          parts.push(
+            "主要来源：" +
+              sig.outboxBySession
+                .map((r) => `${escapeHtml(shortId(r.sessionId))}×${r.count}`)
+                .join("、"),
+          );
+        }
+        if (sig.flushPausedKeys && sig.flushPausedKeys.length) {
+          parts.push(`卡住的 key：<code>${escapeHtml(sig.flushPausedKeys[0])}</code>`);
+        }
+        document.getElementById("signals").innerHTML = parts.join("<br />");
+      }
+
+      async function refresh() {
+        const note = document.getElementById("note");
+        note.textContent = "扫描中…";
+        note.className = "note";
+        try {
+          const data = await invoke("doctor.scan", {});
+          render(data);
+          note.textContent = "";
+        } catch (err) {
+          note.textContent = String(err && err.message ? err.message : err);
+          note.className = "note err";
+        }
+      }
+
+      async function previewClean() {
+        const ids = selectedIds();
+        if (!ids.length) return;
+        const note = document.getElementById("note");
+        note.textContent = "生成清单…";
+        try {
+          const res = await invoke("doctor.clean", { sessionIds: ids, confirm: false });
+          pendingIds = ids;
+          const list = document.getElementById("planList");
+          list.innerHTML = "";
+          for (const p of res.planned || []) {
+            const li = document.createElement("li");
+            li.innerHTML = `<code>${escapeHtml(p.path.split(/[\\/]/).pop())}</code> <span class="dim">${fmtBytes(p.bytes)}</span>`;
+            list.appendChild(li);
+          }
+          document.getElementById("confirmText").textContent =
+            `将备份并删除 ${(res.planned || []).length} 个索引文件：`;
+          document.getElementById("confirmBox").classList.remove("hidden");
+          note.textContent = "";
+        } catch (err) {
+          note.textContent = String(err && err.message ? err.message : err);
+          note.className = "note err";
+        }
+      }
+
+      async function doClean() {
+        const note = document.getElementById("note");
+        note.textContent = "清理中…";
+        try {
+          const res = await invoke("doctor.clean", { sessionIds: pendingIds, confirm: true });
+          const box = document.getElementById("resultBox");
+          const failed = res.failed || [];
+          document.getElementById("resultText").innerHTML =
+            `已删除 ${res.deleted.length} 个索引文件` +
+            (failed.length ? `，失败 ${failed.length} 个` : "") +
+            `<br />备份目录：<code>${escapeHtml(res.backupDir || "")}</code>` +
+            `<br /><span class="hint">重启 PI-Desktop 后宿主才会重建干净的索引。</span>`;
+          box.classList.remove("hidden");
+          document.getElementById("confirmBox").classList.add("hidden");
+          note.textContent = "";
+          await refresh();
+        } catch (err) {
+          note.textContent = String(err && err.message ? err.message : err);
+          note.className = "note err";
+        }
+      }
+
+      document.getElementById("rescan").addEventListener("click", () => void refresh());
+      document.getElementById("clean").addEventListener("click", () => void previewClean());
+      document.getElementById("confirmYes").addEventListener("click", () => void doClean());
+      document.getElementById("confirmNo").addEventListener("click", () => {
+        document.getElementById("confirmBox").classList.add("hidden");
+        pendingIds = [];
+      });
+
+      /*
+       * 宿主的窗口控制胶囊按 body 的 computed 背景/前景着色，而它只在初始化时
+       * 读一次（installPanelChrome → syncPageColors）。面板异步切主题之后必须
+       * 把真实配色回写给宿主，否则右上角的关闭按钮会在浅色底上发虚。
+       */
+      let retintScheduled = false;
+      function retintPanelChrome() {
+        const host = document.querySelector("pi-plugin-panel-chrome");
+        if (!host) return;
+        const paintable = (v) => v && v !== "transparent" && v !== "rgba(0, 0, 0, 0)";
+        const bodyStyle = document.body ? window.getComputedStyle(document.body) : null;
+        const rootStyle = window.getComputedStyle(document.documentElement);
+        let bg = bodyStyle && bodyStyle.backgroundColor;
+        let fg = bodyStyle && bodyStyle.color;
+        if (!paintable(bg)) bg = rootStyle.backgroundColor;
+        if (!paintable(fg)) fg = rootStyle.color;
+        if (paintable(bg)) host.style.setProperty("--pi-plugin-panel-page-background", bg);
+        if (paintable(fg)) host.style.setProperty("--pi-plugin-panel-page-foreground", fg);
+      }
+      function scheduleRetint() {
+        if (retintScheduled) return;
+        retintScheduled = true;
+        window.setTimeout(() => {
+          retintScheduled = false;
+          retintPanelChrome();
+        }, 0);
+      }
+      if (typeof MutationObserver !== "undefined") {
+        new MutationObserver(scheduleRetint).observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["data-theme", "data-base", "style"],
+        });
+      }
+      window.addEventListener("DOMContentLoaded", scheduleRetint, { once: true });
+
+      if (bridge && typeof bridge.on === "function") {
+        bridge.on("appearance:changed", applyAppearance);
+      }
+      if (bridge && typeof bridge.invoke === "function") {
+        bridge
+          .invoke("app.getAppearance")
+          .then(applyAppearance)
+          .catch(() => applyAppearance(null));
+      } else {
+        applyAppearance(null);
+      }
+      scheduleRetint();
+
+      void refresh();
+    </script>
+  </body>
+</html>
