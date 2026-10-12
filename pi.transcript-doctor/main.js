@@ -93,17 +93,20 @@ function summarizeForAgent(result) {
   };
 }
 
-function backupDirNow() {
+async function backupDirNow() {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return path.join(pi.plugin.getDataPath(), "backups", stamp);
+  // 宿主实现是 `getDataPath: async () => dataPath()`，必须 await：
+  // 当同步值用会拿到 Promise，path.join 会抛 TypeError 且面板侧只表现为“点了没反应”。
+  const base = await pi.plugin.getDataPath();
+  return path.join(base, "backups", stamp);
 }
 
 /** 备份 + 删除；dryRun 时不落盘 */
-function doClean(sessionIds, dryRun) {
+async function doClean(sessionIds, dryRun) {
   return scan.cleanLayouts({
     sessionIds: sessionIds && sessionIds.length ? sessionIds : undefined,
     dryRun,
-    backupDir: dryRun ? null : backupDirNow(),
+    backupDir: dryRun ? null : await backupDirNow(),
   });
 }
 
@@ -228,7 +231,7 @@ async function onLoad() {
         return;
       }
       const ids = before.sessions.filter((s) => s.status === "stale").map((s) => s.sessionId);
-      const res = doClean(ids, false);
+      const res = await doClean(ids, false);
       const n = res.deleted ? res.deleted.length : 0;
       const f = res.failed ? res.failed.length : 0;
       await pi.ui.showToast(
@@ -296,7 +299,7 @@ async function onLoad() {
 
       if (action === "clean") {
         const dryRun = !(args && args.confirm === true);
-        const result = doClean(sessionId ? [sessionId] : undefined, dryRun);
+        const result = await doClean(sessionId ? [sessionId] : undefined, dryRun);
         if (dryRun) {
           return {
             ok: true,
@@ -394,7 +397,7 @@ async function onPanelInvoke(channel, payload) {
   if (channel === "doctor.clean") {
     const sessionIds = payload && Array.isArray(payload.sessionIds) ? payload.sessionIds : undefined;
     const dryRun = !(payload && payload.confirm === true);
-    return doClean(sessionIds, dryRun);
+    return await doClean(sessionIds, dryRun);
   }
   if (channel === "doctor.paths") {
     return {
@@ -402,7 +405,7 @@ async function onPanelInvoke(channel, payload) {
       sessionsDir: scan.SESSIONS_DIR,
       persistenceLog: scan.PERSISTENCE_LOG,
       outboxFile: scan.OUTBOX_FILE,
-      backupRoot: path.join(pi.plugin.getDataPath(), "backups"),
+      backupRoot: path.join(await pi.plugin.getDataPath(), "backups"),
       layoutCacheMinLen: scan.LAYOUT_CACHE_MIN_LEN,
     };
   }

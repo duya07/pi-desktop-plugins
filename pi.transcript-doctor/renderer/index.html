@@ -233,11 +233,35 @@
       let latest = null;
       let pendingIds = [];
 
+      /**
+       * 面板 → 插件进程调用。
+       * 加超时：宿主在某些失败路径上不会把插件进程的异常回传，面板会一直挂着，
+       * 表现为"点了没反应"。超时至少能把原因说清楚。
+       */
+      const INVOKE_TIMEOUT_MS = 20000;
       async function invoke(channel, payload) {
         if (!bridge || typeof bridge.invoke !== "function") {
           throw new Error("pluginBridge 不可用（需在 PI-Desktop 面板中打开）");
         }
-        return bridge.invoke(channel, payload);
+        let timer;
+        try {
+          return await Promise.race([
+            bridge.invoke(channel, payload),
+            new Promise((_, reject) => {
+              timer = window.setTimeout(
+                () =>
+                  reject(
+                    new Error(
+                      `调用 ${channel} 超过 ${INVOKE_TIMEOUT_MS / 1000}s 没有返回；插件进程可能抛错但未回传，可看 设置→插件 或 logs/app/plugin.log`,
+                    ),
+                  ),
+                INVOKE_TIMEOUT_MS,
+              );
+            }),
+          ]);
+        } finally {
+          if (timer) window.clearTimeout(timer);
+        }
       }
 
       function escapeHtml(s) {
