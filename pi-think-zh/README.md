@@ -11,6 +11,7 @@
 - 入口从 `extension.js` 更换为 `extension-v2.js`，避开安装版按入口 realpath 缓存的旧工厂；这不是通过修改注册表清缓存。
 - 注入标记为 `<io.github.duya07.think-zh/v1|v2>`；去重正则同时认旧 id `local.pi-think-zh`，所以改 id 之前写进过 system prompt 的块也会被替换掉，不会新旧并存。
 - 已核实这版 PI 的路径规则刷新会重新组装系统提示，可能覆盖本轮追加段。未采用 `before_provider_request` 返回整份 payload 的补丁，因为宿主多个该钩子的返回值不自动串联，可能覆盖 Project Knowledge 附件。该宿主限制未修复。
+- 注入只对**之后新开的对话**生效：宿主在会话开始时组装 system prompt，已经开着的对话即使重新加载本插件也拿不到新段（用户 2026-10-12 实测：新对话生效，旧对话不生效）。验证办法：新开一个对话，让 agent 原样引用它 system prompt 里以 `<io.github.duya07.think-zh/v2>` 开头的那段。
 - 不要求披露隐藏推理、不伪造思考区内容；不能可靠控制模型未公开的内部推理。
 - 有可见文字的模型也可能忽略语言提示，因此源码和隔离运行时 PASS 不等于实际模型输出已变成中文。
 
