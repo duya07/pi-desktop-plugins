@@ -1,3 +1,14 @@
+> **⚠️ 已废弃（2026-10-13）—— 不再需要，不再维护，不要重新加载或安装。**
+>
+> 本插件是为 **PI-Desktop v0.18.0 及更早版本**的 layout 缓存漂移 bug 写的变通工具。该 bug 已由上游修复：
+> - [#1555](https://github.com/vastsa/PI-Desktop/pull/1555) `fix(host-core): reject unsupported persistent transcript identities`（2026-10-11 合并；Windows 上 `file_identity()` 恒为 0 → 停用磁盘 layout 缓存，属止血）
+> - [#1599](https://github.com/vastsa/PI-Desktop/pull/1599) `fix(transcripts): recover stale layout caches`（2026-10-12 合并；版本化缓存 + 可靠 file identity + 失效边界自动重建，属治本）
+> - [#1586](https://github.com/vastsa/PI-Desktop/pull/1586) `fix(host-core): clean up transcript layout cache in remove_session_files`（2026-10-12 合并；删除会话时一并清理 layout 残留）
+>
+> 三者随 **v0.18.0-beta.7**（2026-10-12 17:45:41 UTC）发布，issue [#1585](https://github.com/vastsa/PI-Desktop/issues/1585) 已于 2026-10-13 确认 fixed 并关闭。本机随后升级到 **PI-Desktop 0.19.1**，已包含该修复，插件失去存在理由；插件已于 2026-10-13 从 PI-Desktop 卸载（`plugin.uninstalled`）。
+>
+> 下方内容保留为当时的实现与判据记录。今后再遇到 `stream did not contain valid UTF-8`，先确认宿主版本是否 ≥ v0.18.0-beta.7，而不是装回本插件。
+
 # Transcript Doctor（转录体检）
 
 PI-Desktop 插件。检查每个会话的 `.jsonl.layout` 行偏移索引是否与 `.jsonl` 对得上，脏了就备份并清理。
@@ -16,7 +27,7 @@ stream did not contain valid UTF-8
 
 Electron 侧把这条错误当作瞬态错误，于是 **`PersistenceOutbox.flushLoop` 永久暂停该会话的持久化队列**，后续消息全部积压在 `session-message-outbox.json` 里。
 
-上游 issue：[vastsa/PI-Desktop#1585](https://github.com/vastsa/PI-Desktop/issues/1585)（主修复 PR #1555 已并入 main，但 v0.18.0 早于该修复，仍在受影响）。
+上游 issue：[vastsa/PI-Desktop#1585](https://github.com/vastsa/PI-Desktop/issues/1585)。**已修复** —— 由 [#1555](https://github.com/vastsa/PI-Desktop/pull/1555)（止血：Windows 上 identity 恒为 0 时停用磁盘 layout 缓存）+ [#1599](https://github.com/vastsa/PI-Desktop/pull/1599)（治本：版本化缓存与失效边界自动重建）+ [#1586](https://github.com/vastsa/PI-Desktop/pull/1586)（清理删除残留）共同修复，随 v0.18.0-beta.7 发布；issue 已于 2026-10-13 由报告者确认 fixed 并关闭。本 README 早期版本只提 #1555 并称其为主修复 —— 方向没错但不完整；#1585 的关闭评论引用的是 #1586 + #1599。
 
 ## 它做什么
 
@@ -34,7 +45,7 @@ Electron 侧把这条错误当作瞬态错误，于是 **`PersistenceOutbox.flus
 
 1. 清理 → 2. **重启 PI-Desktop** → 3. 宿主全量扫描并重建干净索引（判据：`索引头 == 文件字节数`，错位 0）。
 
-另外它**不**修 `.jsonl` 内容（转录本身始终是好的，坏的是索引），也**不**能阻止 bug 复发 —— 根治要等含 PR #1555 的版本。
+另外它**不**修 `.jsonl` 内容（转录本身始终是好的，坏的是索引）。根治已由上游提供：`#1555`（止血）+ `#1599`（治本）+ `#1586`，随 **v0.18.0-beta.7** 发布。**本插件因此废弃**，见文首说明。
 
 ## 判据
 
