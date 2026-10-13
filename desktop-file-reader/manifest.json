@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.duya07.desktop-file-reader",
+  "name": "桌面文件读取",
+  "version": "0.1.0",
+  "description": "让远端工作区的会话直接读取桌面机上的文件（base64），不再依赖内置浏览器面板。",
+  "author": "duya07",
+  "license": "MIT",
+  "homepage": "https://github.com/duya07/pi-desktop-plugins",
+  "main": "main.js",
+  "contributes": {
+    "agentTools": [
+      {
+        "name": "read_desktop_file",
+        "description": "Read a file from the local (desktop) filesystem and return its bytes as base64. Use this when a session running against a remote host needs a file that only exists on the desktop machine. Supports offset/length for chunked reads of large files.",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string", "description": "Absolute path on the desktop, e.g. C:/Users/me/notes.txt" },
+            "offset": { "type": "integer", "description": "Byte offset to start at (default 0)" },
+            "length": { "type": "integer", "description": "Max bytes to read (default 262144, max 1048576)" }
+          },
+          "required": ["path"]
+        }
+      },
+      {
+        "name": "list_desktop_dir",
+        "description": "List one directory's entries on the local (desktop) filesystem.",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string", "description": "Absolute directory path on the desktop" }
+          },
+          "required": ["path"]
+        }
+      }
+    ]
+  },
+  "permissions": ["agent.tool.register"],
+  "engines": { "piDesktop": ">=0.20.0" },
+  "activationEvents": ["onStartup"]
+}
