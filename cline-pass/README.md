@@ -112,6 +112,13 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 > 2026-10-13 本机实测：`cline-pass/deepseek-v4.1-flash` 同时出现在**自建的 `api.cline.bot` provider**（`bc036988-…`）
 > 与本插件网关的 provider 下，而日常会话走的是前者 —— 于是插件网关侧 0 会话、账本为空，pin / failover / 账号池 /
 > 额度这些功能**看不到那部分流量**。想用上它们，就选 baseUrl 为 `http://127.0.0.1:41593/v1` 的那个 provider。
+> **子代理侧更隐蔽（2026-10-13 实测，别踩）**：委派目录的 key 是 `<vendorKey>/<模型 id>`，而用户自建的 provider 的 `vendorKey`
+> 都是 `custom`，于是**两个 provider 的同名模型会撞成同一个 key**。实测：`custom/cline-pass/deepseek-v4.1-flash` 被宿主判为可用，
+> 但那一次子代理请求**根本没进网关**（网关 `historySize = 0`、账本没有新行、宿主日志里也没有）—— 它被直连 `api.cline.bot` 的那条接走了。
+> 对照组：只在网关 provider 里存在的 `cline-pass/glm-5.3`（且未勾「可供 AI 自动调度」）被宿主**直接拒绝** ——
+> `Model "custom/cline-pass/glm-5.3" is not available for delegation. Available: …` → 说明门禁确实生效，而撞名的那条是另一个 provider。
+> 想让子代理只走网关：把旧直连 provider 里**同名**模型的「可供 AI 自动调度」取消勾选（或直接停用它），再勾上网关 provider 的模型；
+> 否则子代理会悄悄走直连那条，账号池 / pin / failover / 账本全都看不到这部分流量。
 
 ---
 
