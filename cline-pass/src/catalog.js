@@ -1,13 +1,13 @@
 /**
  * Published model metadata for the Cline Pass subscription models.
  *
- * The numbers are not guesses and not preferences: they are the values Cline
- * itself publishes for the same slugs, read on 2026-10-13 from
- * `sdk/packages/llms/src/catalog/catalog.generated.ts` (provider key
- * `cline-pass`) and `cline-recommended.generated.ts` (`clinePass[]`, 14 slugs).
- * `test/gateway.test.mjs` pins the shape, and the panel can override any of it
- * per model - the override is what ends up in `manifest.json` and therefore in
- * the host's model picker.
+ * The numbers are not guesses and not preferences: they are what models.dev
+ * publishes for the same slugs - the same source PI-Desktop itself reads
+ * (`resources/models.dev/api.json`, provider key `cline-pass`). `tools/sync-catalog.mjs`
+ * is how this table gets refreshed from it: window from `limit.context`, output
+ * cap from `limit.output`, image support from `modalities.input`, and the ladder
+ * from `reasoning_options`. Last synced 2026-10-13. `test/gateway.test.mjs` pins
+ * the shape, and the panel can override any of it per model.
  *
  * Why the numbers matter: the host sizes its prompt budget against the declared
  * context window, so an overstated window silently overflows the model and an
@@ -25,13 +25,10 @@
  *     request starts failing for reasons the panel cannot explain.
  *   - `none`: no thinking control in the catalog at all.
  *
- * One entry is flagged `fallback`: `cline-pass/qwen3.8-max` has no
- * `reasoningOptions`, `family` or `releaseDate` in Cline's catalog and its
- * numbers are byte-identical to that file's `CLINE_PASS_MODEL_DEFAULTS`
- * constant, which the client substitutes when a model is missing from the
- * OpenRouter catalog it consults. So its window and output cap are a stand-in,
- * not a published capability - the panel says so, and it is not registered by
- * default.
+ * An entry models.dev does not publish keeps its hand-written numbers and is
+ * flagged `fallback: true`, which the panel surfaces as "兜底默认值，别当真实能力".
+ * Nothing is flagged today: the last stand-in (`cline-pass/qwen3.8-max`) turned
+ * out to be published after all, so the flag went away with the refresh.
  *
  * @module cline-pass/catalog
  */
@@ -107,45 +104,45 @@ function reasoningEffortFor(level, allowed) {
 const MODEL_CATALOG = {
   'cline-pass/deepseek-v4.1-flash': {
     name: 'DeepSeek V4.1 Flash',
-    contextWindow: 1048576,
-    maxTokens: 943718,
+    contextWindow: 1000000,
+    maxTokens: 384000,
     supportsImages: true,
     thinking: { lever: 'effort', levels: ['low', 'high', 'max'] },
   },
   'cline-pass/deepseek-v4-pro': {
     name: 'DeepSeek V4 Pro',
-    contextWindow: 1048576,
+    contextWindow: 1000000,
     maxTokens: 384000,
     supportsImages: false,
-    thinking: { lever: 'effort', levels: ['high', 'xhigh'] },
+    thinking: { lever: 'effort', levels: ['high', 'max'] },
   },
   'cline-pass/glm-5.3': {
     name: 'GLM-5.3',
-    contextWindow: 1048576,
-    maxTokens: 943718,
+    contextWindow: 1000000,
+    maxTokens: 131072,
     supportsImages: false,
     thinking: { lever: 'effort', levels: ['low', 'high', 'max'] },
   },
   'cline-pass/glm-5.3-flash': {
-    name: 'GLM-5.3-Flash',
-    contextWindow: 1048576,
-    maxTokens: 943717,
+    name: 'cline-pass/glm-5.3-flash',
+    contextWindow: 1000000,
+    maxTokens: 131072,
     supportsImages: true,
     thinking: { lever: 'effort', levels: ['low', 'high', 'max'] },
   },
   'cline-pass/kimi-k3': {
     name: 'Kimi K3',
     contextWindow: 1048576,
-    maxTokens: 943718,
+    maxTokens: 131072,
     supportsImages: true,
     thinking: { lever: 'effort', levels: ['low', 'high', 'max'] },
   },
   'cline-pass/muse-spark-1.3-contributor': {
     name: 'Muse Spark 1.3 Contributor',
     contextWindow: 1048576,
-    maxTokens: 943718,
+    maxTokens: 131072,
     supportsImages: true,
-    thinking: { lever: 'effort', levels: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+    thinking: { lever: 'effort', levels: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
   },
   'cline-pass/minimax-m3': {
     name: 'MiniMax-M3',
@@ -156,65 +153,63 @@ const MODEL_CATALOG = {
   },
   'cline-pass/mimo-v2.5': {
     name: 'MiMo-V2.5',
-    contextWindow: 1050000,
+    contextWindow: 1048576,
     maxTokens: 131072,
     supportsImages: true,
     thinking: { lever: 'toggle', levels: [] },
   },
   'cline-pass/mimo-v2.5-pro': {
     name: 'MiMo-V2.5-Pro',
-    contextWindow: 1050000,
+    contextWindow: 1048576,
     maxTokens: 131072,
     supportsImages: false,
     thinking: { lever: 'toggle', levels: [] },
   },
   'cline-pass/mimo-v2.6-flash': {
     name: 'MiMo-V2.6-Flash',
-    contextWindow: 1050000,
+    contextWindow: 1048576,
     maxTokens: 131072,
     supportsImages: true,
-    thinking: { lever: 'toggle', levels: [] },
+    thinking: { lever: 'effort', levels: ['low', 'medium', 'high', 'xhigh'] },
   },
   'cline-pass/mimo-v2.6-pro': {
     name: 'MiMo-V2.6-Pro',
-    contextWindow: 1050000,
+    contextWindow: 1048576,
     maxTokens: 131072,
     supportsImages: true,
-    thinking: { lever: 'toggle', levels: [] },
+    thinking: { lever: 'effort', levels: ['low', 'medium', 'high', 'xhigh'] },
   },
   'cline-pass/qwen3.7-max': {
     name: 'Qwen3.7 Max',
     contextWindow: 1000000,
-    maxTokens: 131072,
+    maxTokens: 65536,
     supportsImages: false,
     thinking: { lever: 'toggle', levels: [] },
   },
   'cline-pass/qwen3.7-plus': {
     name: 'Qwen3.7 Plus',
     contextWindow: 1000000,
-    maxTokens: 131072,
+    maxTokens: 64000,
     supportsImages: true,
     thinking: { lever: 'toggle', levels: [] },
   },
   'cline-pass/qwen3.8-max': {
     name: 'Qwen3.8 Max',
-    contextWindow: 128000,
-    maxTokens: 8192,
-    supportsImages: false,
-    thinking: { lever: 'none', levels: [] },
-    // See the module comment: both numbers are Cline's stand-in default here.
-    fallback: true,
+    contextWindow: 1000000,
+    maxTokens: 131072,
+    supportsImages: true,
+    thinking: { lever: 'effort', levels: ['low', 'medium', 'xhigh'] },
   },
 }
 
 /**
- * The models the shipped `manifest.json` registers.
+ * The models the generated import config carries by default.
  *
- * The host's model picker shows exactly what the manifest declares, so the
- * starting set is deliberately small and the panel's model tab writes whatever
- * the user picks back into the manifest (which the host reloads). The
- * authoritative table above still holds every Cline Pass model, so nothing is
- * lost by not registering it up front.
+ * The panel's model tab decides what ends up in that config, and the user hands
+ * the config to PI-Desktop's "从其他工具导入" to create a provider of their own -
+ * which is the only kind of provider that can be edited in Settings and offered
+ * to subagents. The authoritative table above still holds every Cline Pass model,
+ * so nothing is lost by leaving one out.
  */
 const DEFAULT_REGISTERED = [
   'cline-pass/deepseek-v4.1-flash',
@@ -250,10 +245,10 @@ function defaultThinkingLevel(entry) {
 /**
  * The `/v1/models` payload the gateway serves.
  *
- * The host does not read this endpoint while the manifest already declares the
- * models, but a discoverable list keeps the provider honest for anyone pointing
- * a plain OpenAI client (or a second harness) at the local gateway. When the
- * caller knows which models the manifest registers, that flag rides along.
+ * The plugin declares no models to the host any more, so this endpoint is what
+ * keeps the gateway discoverable for anyone pointing a plain OpenAI client (or a
+ * second harness) at it. `registered` now means "written into the generated
+ * import config", which is exactly what the panel's checkbox toggles.
  */
 function modelsEndpointPayload(effective) {
   const rows = Array.isArray(effective)

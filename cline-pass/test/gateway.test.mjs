@@ -251,49 +251,59 @@ function rawStatus(pathname, headers) {
 }
 
 test('manifest, catalog and entry point agree with each other', () => {
-  const provider = manifest.contributes.providers[0]
-  assert.equal(provider.apiStyle, 'chat_completions')
-  // `authKind: "none"` is load-bearing, not decoration: the host only sends a
-  // plugin provider's models to the model picker when
-  // `enabled && (hasSecret || authKind === "none")`, and this plugin keeps its
-  // Cline keys in its own data directory where the host cannot see them. With
-  // `api_key` the whole provider silently disappears from the picker.
-  assert.equal(provider.authKind, 'none')
-  assert.equal(provider.baseUrl, `http://127.0.0.1:${gatewayModule.manifestPort()}/v1`)
-  // The manifest declares a subset of the catalog: only the registered models
-  // reach the host's picker, while the catalog still holds every model Cline
-  // publishes (the panel adds one later by writing it into the manifest).
+  // No provider declaration at all. The plugin used to declare one (with an empty
+  // model list, so the settings page carried a row with 0 models beside the
+  // provider the user imports); `contributes.providers` is gone now, and
+  // `provider.register` with it. The host drops the leftover row on its next sync
+  // of this plugin.
+  assert.equal(manifest.contributes.providers, undefined, 'the manifest must not declare a provider any more')
+  assert.equal(
+    manifest.permissions.includes('provider.register'),
+    false,
+    'a manifest that declares no provider does not need provider.register',
+  )
+  // The address the host has to reach is spelled once, in src/protocol.js, and the
+  // generated config is the only place the host ever learns it.
+  assert.equal(protocol.GATEWAY_PORT, 41593)
+  assert.equal(protocol.GATEWAY_BASE_URL, 'http://127.0.0.1:41593/v1')
+  assert.equal(gatewayModule.LISTEN_PORT, protocol.GATEWAY_PORT, 'the gateway binds that same port')
+  assert.equal(
+    modelRegistry.importConfigPayload().providers[modelRegistry.IMPORT_PROVIDER_ID].baseUrl,
+    protocol.GATEWAY_BASE_URL,
+    'the generated config must point at the gateway',
+  )
+  // The catalog still holds every model Cline publishes; the generated config
+  // carries the ones the user ticked, which start out as the five defaults.
   const shipped = Object.keys(catalog.MODEL_CATALOG).sort()
   assert.equal(shipped.length, 14)
   const defaults = modelRegistry.effectiveModels({})
   assert.equal(defaults.length, shipped.length)
   assert.deepEqual(defaults.map((model) => model.id).sort(), shipped)
-  const declared = provider.models.map((entry) => entry.id)
-  for (const id of declared) assert.ok(shipped.includes(id), `the manifest declares ${id}, which the catalog does not ship`)
-  assert.deepEqual([...declared].sort(), [...catalog.DEFAULT_REGISTERED].sort())
-  assert.deepEqual([...declared].sort(), defaults.filter((model) => model.registered).map((model) => model.id).sort())
-  // Three counts have to be the same number: what the manifest declares, what
-  // the registry registers by default, and what the catalog marks as default.
-  assert.equal(declared.length, 5)
-  assert.equal(declared.length, catalog.DEFAULT_REGISTERED.length)
-  assert.equal(declared.length, defaults.filter((model) => model.registered).length)
-  for (const model of provider.models) {
-    const entry = catalog.MODEL_CATALOG[model.id]
-    const effective = defaults.find((candidate) => candidate.id === model.id)
-    assert.deepEqual(model, modelRegistry.manifestModel(effective), `${model.id} manifest entry`)
-    assert.equal(model.contextWindow, effective.contextWindow, `${model.id} contextWindow`)
-    assert.equal(model.maxTokens, effective.maxTokens, `${model.id} maxTokens`)
-    assert.equal(model.supportsImages, effective.supportsImages, `${model.id} supportsImages`)
-    assert.deepEqual(model.thinkingLevels, effective.thinkingLevels, `${model.id} thinkingLevels`)
-    assert.equal(model.defaultThinkingLevel, effective.defaultThinkingLevel, `${model.id} defaultThinkingLevel`)
-    // ...and those are the published numbers, not a mis-merged copy of them.
-    assert.equal(model.contextWindow, entry.contextWindow, `${model.id} published contextWindow`)
-    assert.equal(model.maxTokens, entry.maxTokens, `${model.id} published maxTokens`)
-    assert.equal(model.supportsImages, entry.supportsImages, `${model.id} published supportsImages`)
-    assert.deepEqual(model.thinkingLevels, catalog.thinkingLevelsFor(entry), `${model.id} published thinkingLevels`)
-    assert.equal(model.defaultThinkingLevel, catalog.defaultThinkingLevel(entry), `${model.id} published defaultThinkingLevel`)
+  const generated = modelRegistry.importConfigPayload()
+  const entries = generated.providers[modelRegistry.IMPORT_PROVIDER_ID].models
+  const carried = entries.map((model) => model.id)
+  for (const id of carried) assert.ok(shipped.includes(id), `the generated config carries ${id}, which the catalog does not ship`)
+  assert.deepEqual([...carried].sort(), [...catalog.DEFAULT_REGISTERED].sort())
+  assert.deepEqual([...carried].sort(), defaults.filter((model) => model.registered).map((model) => model.id).sort())
+  // Three counts have to be the same number: what the generated config carries,
+  // what the registry ticks by default, and what the catalog marks as default.
+  assert.equal(carried.length, 5)
+  assert.equal(carried.length, catalog.DEFAULT_REGISTERED.length)
+  assert.equal(carried.length, defaults.filter((model) => model.registered).length)
+  for (const entry of entries) {
+    const published = catalog.MODEL_CATALOG[entry.id]
+    const effective = defaults.find((candidate) => candidate.id === entry.id)
+    // The generated entry carries the effective values under the *host's* field
+    // names - and they are the published numbers, not a mis-merged copy of them.
+    assert.equal(entry.name, effective.name, `${entry.id} name`)
+    assert.deepEqual(entry.limit, { context: effective.contextWindow, output: effective.maxTokens }, `${entry.id} limit`)
+    assert.equal(entry.reasoning, effective.thinkingLevels.length > 1, `${entry.id} reasoning`)
+    assert.deepEqual(entry.input, effective.supportsImages ? ['text', 'image'] : ['text'], `${entry.id} input`)
+    assert.equal(entry.limit.context, published.contextWindow, `${entry.id} published contextWindow`)
+    assert.equal(entry.limit.output, published.maxTokens, `${entry.id} published maxTokens`)
+    assert.equal(entry.reasoning, catalog.thinkingLevelsFor(published).length > 1, `${entry.id} published thinkingLevels`)
   }
-  assert.equal(provider.models.length <= 64, true)
+  assert.equal(entries.length <= 64, true)
   const toolNames = manifest.contributes.agentTools.map((tool) => tool.name).sort()
   assert.deepEqual(
     toolNames,
@@ -302,7 +312,7 @@ test('manifest, catalog and entry point agree with each other', () => {
   )
   assert.equal(typeof mainModule.onLoad, 'function')
   assert.equal(typeof mainModule.onPanelInvoke, 'function')
-  for (const permission of ['provider.register', 'background.service', 'agent.tool.register', 'ui.panel']) {
+  for (const permission of ['background.service', 'agent.tool.register', 'ui.panel']) {
     assert.ok(manifest.permissions.includes(permission), `missing permission ${permission}`)
   }
   assert.ok(manifest.activationEvents.includes('onStartup'))
@@ -334,9 +344,7 @@ test('a localized object only appears where the host resolves i18n', () => {
   // The fields that are rendered as plain text, spelled out so a future edit
   // cannot quietly put an object back.
   assert.equal(typeof manifest.contributes.services[0].label, 'string')
-  assert.equal(typeof manifest.contributes.providers[0].name, 'string')
-  assert.equal(typeof manifest.contributes.providers[0].category, 'string')
-  assert.equal(typeof manifest.contributes.providers[0].description, 'string')
+  assert.equal(manifest.contributes.providers, undefined, 'no provider row is rendered any more')
   for (const command of manifest.contributes.commands) assert.equal(typeof command.title, 'string', `command ${command.id}`)
   for (const tool of manifest.contributes.agentTools) assert.equal(typeof tool.description, 'string', `tool ${tool.name}`)
 })
@@ -375,7 +383,7 @@ test('gateway serves the model list and rejects foreign hosts', async () => {
   assert.equal(payload.data.length, Object.keys(catalog.MODEL_CATALOG).length)
   assert.equal(payload.data.length, 14)
   // The registered flag is what tells a client (and the test) which of the 14
-  // models the host's picker actually shows.
+  // models the generated config carries - the ones the user ticked.
   const registered = payload.data.filter((row) => row.registered)
   assert.equal(registered.length, 5)
   assert.deepEqual(registered.map((row) => row.id).sort(), [...catalog.DEFAULT_REGISTERED].sort())
@@ -383,16 +391,17 @@ test('gateway serves the model list and rejects foreign hosts', async () => {
   assert.equal(flash.object, 'model')
   assert.equal(flash.owned_by, 'cline-pass')
   assert.equal(flash.name, 'DeepSeek V4.1 Flash')
-  assert.equal(flash.context_window, 1048576)
-  assert.equal(flash.max_tokens, 943718)
+  assert.equal(flash.context_window, 1000000)
+  assert.equal(flash.max_tokens, 384000)
   assert.deepEqual(flash.capabilities, ['text', 'image'])
   assert.equal(flash.thinking, 'effort')
   const minimax = payload.data.find((row) => row.id === 'cline-pass/minimax-m3')
   assert.equal(minimax.thinking, 'toggle')
   assert.equal(minimax.registered, true)
-  const standIn = payload.data.find((row) => row.id === 'cline-pass/qwen3.8-max')
-  assert.equal(standIn.context_window, 128000)
-  assert.equal(standIn.registered, false, 'the stand-in fallback entry is not registered by default')
+  const unticked = payload.data.find((row) => row.id === 'cline-pass/qwen3.8-max')
+  assert.equal(unticked.context_window, 1000000)
+  assert.equal(unticked.max_tokens, 131072)
+  assert.equal(unticked.registered, false, 'only the ticked models are in the generated config')
   assert.equal(await rawStatus('/v1/models', { host: 'evil.example' }), 403)
   assert.equal(await rawStatus('/v1/models', { host: `127.0.0.1:${gateway.port}` }), 200)
 })
@@ -578,8 +587,8 @@ test('the gateway port, status and settings stay consistent', () => {
   assert.deepEqual(flash.edited, [])
   assert.deepEqual(flash.published, {
     name: 'DeepSeek V4.1 Flash',
-    contextWindow: 1048576,
-    maxTokens: 943718,
+    contextWindow: 1000000,
+    maxTokens: 384000,
     supportsImages: true,
     thinkingLevels: ['off', 'low', 'high', 'max'],
   })
@@ -587,13 +596,20 @@ test('the gateway port, status and settings stay consistent', () => {
   assert.equal(flash.reasoning, true)
   assert.deepEqual(flash.input, ['text', 'image'])
   assert.equal(status.models.filter((model) => model.registered).length, 5)
-  const standIn = status.models.find((model) => model.id === 'cline-pass/qwen3.8-max')
-  assert.equal(standIn.fallback, true, 'the stand-in entry says so')
-  assert.equal(standIn.registered, false)
-  assert.equal(standIn.lever, 'none')
-  assert.deepEqual(standIn.thinkingLevels, ['off'])
-  assert.equal(standIn.reasoning, false)
-  assert.deepEqual(standIn.input, ['text'])
+  const minimax = status.models.find((model) => model.id === 'cline-pass/minimax-m3')
+  assert.equal(minimax.fallback, false)
+  assert.equal(minimax.registered, true)
+  assert.equal(minimax.lever, 'toggle')
+  assert.deepEqual(minimax.thinkingLevels, ['off'], 'an on/off model only offers off to the host')
+  assert.equal(minimax.reasoning, false)
+  assert.deepEqual(minimax.input, ['text', 'image'])
+  // No entry is a stand-in any more, so a model the user did not tick is simply
+  // not part of the generated config.
+  const unticked = status.models.find((model) => model.id === 'cline-pass/qwen3.8-max')
+  assert.equal(unticked.fallback, false)
+  assert.equal(unticked.registered, false)
+  assert.equal(unticked.lever, 'effort')
+  assert.deepEqual(unticked.thinkingLevels, ['off', 'low', 'medium', 'xhigh'])
   gateway.ops.setConfig({ streamIdleTimeoutMs: 123456 })
   assert.equal(configStore.get().streamIdleTimeoutMs, 123456)
   gateway.ops.setConfig({ streamIdleTimeoutMs: 300000 })
@@ -848,10 +864,15 @@ test('reasoningEffortFor clamps a host level onto the model it was given', () =>
 test('the thinking ladder of every model follows the published catalog', () => {
   const ladder = (id) => catalog.thinkingLevelsFor(catalog.catalogEntry(id))
   assert.deepEqual(ladder('cline-pass/deepseek-v4.1-flash'), ['off', 'low', 'high', 'max'])
-  assert.deepEqual(ladder('cline-pass/deepseek-v4-pro'), ['off', 'high', 'xhigh'])
+  assert.deepEqual(ladder('cline-pass/deepseek-v4-pro'), ['off', 'high', 'max'])
   assert.deepEqual(ladder('cline-pass/minimax-m3'), ['off'], 'a toggle model only offers off to the host')
-  assert.deepEqual(ladder('cline-pass/qwen3.8-max'), ['off'], 'a model with no control only offers off')
-  assert.deepEqual(ladder('cline-pass/muse-spark-1.3-contributor'), catalog.PI_THINKING_LEVELS)
+  assert.deepEqual(ladder('cline-pass/qwen3.8-max'), ['off', 'low', 'medium', 'xhigh'], 'the refreshed catalog gives it three efforts')
+  assert.deepEqual(ladder('cline-pass/mimo-v2.5'), ['off'], 'an on/off model only offers off')
+  assert.deepEqual(
+    ladder('cline-pass/muse-spark-1.3-contributor'),
+    catalog.PI_THINKING_LEVELS.filter((level) => level !== 'max'),
+    'the one model that publishes every effort except max',
+  )
   assert.equal(catalog.defaultThinkingLevel(catalog.catalogEntry('cline-pass/deepseek-v4-pro')), 'high')
   assert.equal(catalog.defaultThinkingLevel(catalog.catalogEntry('cline-pass/minimax-m3')), 'off')
   assert.equal(catalog.defaultThinkingLevel(catalog.catalogEntry('cline-pass/nope')), 'off')
@@ -867,7 +888,7 @@ test('the thinking ladder of every model follows the published catalog', () => {
   }
 })
 
-test('the catalog holds the 14 published models and marks exactly one stand-in', () => {
+test('the catalog holds the 14 published models and marks no stand-in', () => {
   assert.deepEqual(modelRegistry.modelIds(), Object.keys(catalog.MODEL_CATALOG))
   assert.equal(modelRegistry.modelIds().length, 14)
   assert.equal(catalog.DEFAULT_REGISTERED.length, 5)
@@ -883,7 +904,9 @@ test('the catalog holds the 14 published models and marks exactly one stand-in',
     assert.equal(Array.isArray(entry.thinking.levels), true, `${id} levels`)
     // `fallback` marks numbers that are a stand-in rather than a published
     // capability, so the panel can say so instead of presenting them as facts.
-    assert.equal(entry.fallback === true, id === 'cline-pass/qwen3.8-max', `${id} fallback flag`)
+    // Nothing is flagged today: the last stand-in (`cline-pass/qwen3.8-max`)
+    // turned out to be published after all, which is what the flag now says.
+    assert.equal(entry.fallback === true, false, `${id} fallback flag`)
   }
 })
 
@@ -905,24 +928,25 @@ test('model settings: fourteen models, five registered, nothing edited', () => {
   const defaults = modelRegistry.effectiveModels()
   assert.equal(defaults.length, 14)
   assert.deepEqual(defaults.filter((model) => model.registered).map((model) => model.id), catalog.DEFAULT_REGISTERED)
-  assert.deepEqual(modelRegistry.registeredManifestModels().map((model) => model.id), catalog.DEFAULT_REGISTERED)
+  // `registered` now means "ticked into the config the user imports", so the
+  // generated payload is the thing to check - in catalog order.
   assert.deepEqual(
-    modelRegistry.registeredManifestModels(),
-    catalog.DEFAULT_REGISTERED.map((id) => modelRegistry.manifestModel(defaults.find((model) => model.id === id))),
+    modelRegistry.importConfigPayload().providers[modelRegistry.IMPORT_PROVIDER_ID].models.map((model) => model.id),
+    catalog.DEFAULT_REGISTERED,
   )
   assert.deepEqual(defaults.find((model) => model.id === MODEL), {
     id: MODEL,
     name: 'DeepSeek V4.1 Flash',
-    contextWindow: 1048576,
-    maxTokens: 943718,
+    contextWindow: 1000000,
+    maxTokens: 384000,
     supportsImages: true,
     thinkingLevels: ['off', 'low', 'high', 'max'],
     defaultThinkingLevel: 'low',
     registered: true,
     published: {
       name: 'DeepSeek V4.1 Flash',
-      contextWindow: 1048576,
-      maxTokens: 943718,
+      contextWindow: 1000000,
+      maxTokens: 384000,
       supportsImages: true,
       thinkingLevels: ['off', 'low', 'high', 'max'],
     },
@@ -930,11 +954,16 @@ test('model settings: fourteen models, five registered, nothing edited', () => {
     fallback: false,
     edited: [],
   })
-  const standIn = defaults.find((model) => model.id === 'cline-pass/qwen3.8-max')
-  assert.equal(standIn.fallback, true)
-  assert.equal(standIn.lever, 'none')
-  assert.deepEqual(standIn.thinkingLevels, ['off'])
-  assert.equal(standIn.registered, false)
+  // Nothing is a stand-in any more: the last one (qwen3.8-max) turned out to be
+  // published after all, so every entry carries published numbers.
+  const published = defaults.find((model) => model.id === 'cline-pass/qwen3.8-max')
+  assert.equal(published.fallback, false)
+  assert.equal(published.lever, 'effort')
+  assert.deepEqual(published.thinkingLevels, ['off', 'low', 'medium', 'xhigh'])
+  assert.equal(published.registered, false)
+  const toggled = defaults.find((model) => model.id === 'cline-pass/mimo-v2.5')
+  assert.equal(toggled.lever, 'toggle')
+  assert.deepEqual(toggled.thinkingLevels, ['off'], 'an on/off model offers the host only off')
   assert.equal(modelRegistry.defaultsFor('cline-pass/nope'), null)
 })
 
@@ -969,20 +998,20 @@ test('model settings: an override wins and the published value stays visible', (
   // Cline's own.
   assert.deepEqual(glm.published, {
     name: 'GLM-5.3',
-    contextWindow: 1048576,
-    maxTokens: 943718,
+    contextWindow: 1000000,
+    maxTokens: 131072,
     supportsImages: false,
     thinkingLevels: ['off', 'low', 'high', 'max'],
   })
   // Deselecting one model leaves the other thirteen as they were.
   assert.equal(effective.filter((model) => model.registered).length, 4)
   assert.deepEqual(
-    modelRegistry.registeredManifestModels(settings).map((model) => model.id),
+    modelRegistry.importConfigPayload(settings).providers[modelRegistry.IMPORT_PROVIDER_ID].models.map((model) => model.id),
     catalog.DEFAULT_REGISTERED.filter((id) => id !== 'cline-pass/glm-5.3'),
   )
   assert.deepEqual(modelRegistry.sanitizeSettings(settings)['cline-pass/glm-5.3'].contextWindow, 222222)
   // Nothing else is touched by that patch.
-  assert.equal(effective.find((model) => model.id === MODEL).contextWindow, 1048576)
+  assert.equal(effective.find((model) => model.id === MODEL).contextWindow, 1000000)
   assert.deepEqual(effective.find((model) => model.id === MODEL).edited, [])
   assert.equal(effective.length, 14)
 })
@@ -1002,8 +1031,8 @@ test('model settings: out-of-range and unknown overrides are dropped', () => {
   assert.deepEqual(sanitized, { 'cline-pass/mimo-v2.5': { contextWindow: 1200, maxTokens: 100000000 } })
   const effective = modelRegistry.effectiveModels({ 'cline-pass/glm-5.3': { contextWindow: 5, maxTokens: -3 } })
   const glm = effective.find((model) => model.id === 'cline-pass/glm-5.3')
-  assert.equal(glm.contextWindow, 1048576, 'the published window, not the rejected one')
-  assert.equal(glm.maxTokens, 943718)
+  assert.equal(glm.contextWindow, 1000000, 'the published window, not the rejected one')
+  assert.equal(glm.maxTokens, 131072)
   assert.deepEqual(glm.edited, [])
   assert.equal(effective.length, 14)
   // A settings block that is not an object at all is ignored, not thrown on.
@@ -1061,109 +1090,132 @@ test('model settings: the alias and the host omit default survive the filter', (
   const pick = (settings) => modelRegistry.effectiveModels(settings).find((model) => model.id === MODEL)
   const omitted = pick({ [MODEL]: { thinkingLevels: ['off', 'high', 'max'], defaultThinkingLevel: 'omit' } })
   assert.equal(omitted.defaultThinkingLevel, 'omit')
-  // The manifest the host reads carries both, since that is where it looks.
-  const manifestModel = modelRegistry
-    .registeredManifestModels({ [MODEL]: { name: '主模型', defaultThinkingLevel: 'omit' } })
-    .find((model) => model.id === MODEL)
-  assert.equal(manifestModel.name, '主模型')
-  assert.equal(manifestModel.defaultThinkingLevel, 'omit')
+  // The config the panel generates carries the alias, since that is where the
+  // host reads a model's label from now.
+  const generatedEntry = modelRegistry
+    .importConfigPayload({ [MODEL]: { name: '主模型', defaultThinkingLevel: 'omit' } })
+    .providers[modelRegistry.IMPORT_PROVIDER_ID].models.find((model) => model.id === MODEL)
+  assert.equal(generatedEntry.name, '主模型')
+  // `defaultThinkingLevel` has no counterpart in the host's `pi` format: an
+  // imported model gets the host's generic thinking levels, so this field is
+  // deliberately not written (a made-up field would just be ignored).
+  assert.deepEqual(Object.keys(generatedEntry), ['id', 'name', 'limit', 'reasoning', 'input'])
 })
 
-/* ---------------------------------- manifest sync ---------------------------------- */
+/* ------------------------------ the generated config ------------------------------ */
 
-/** The manifest without its model list, so a write can be diffed field by field. */
-function withoutModels(text) {
-  const doc = JSON.parse(text)
-  const provider = { ...doc.contributes.providers[0], models: null }
-  return JSON.stringify({ ...doc, contributes: { ...doc.contributes, providers: [provider, ...doc.contributes.providers.slice(1)] } })
+/** The model ids one generated payload carries, in order. */
+function generatedIds(payload) {
+  return payload.providers[modelRegistry.IMPORT_PROVIDER_ID].models.map((model) => model.id)
 }
 
-test('syncManifest writes the registered models, keeps a backup and is a no-op second time', () => {
-  // The plugin's own manifest is the live file the host reads, so every write in
-  // this test happens on a copy - and the real file is re-read at the end to
-  // prove it was never touched.
-  const realManifest = fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'picp-manifest-'))
-  const copyPath = path.join(dir, 'manifest.json')
-  fs.writeFileSync(copyPath, realManifest, 'utf8')
-  try {
-    // The shipped manifest already says exactly what the defaults compute, so
-    // there is nothing to write and no backup to make.
-    const same = modelRegistry.syncManifest({ manifestPath: copyPath })
-    assert.equal(same.changed, false)
-    assert.equal(same.count, 5)
-    assert.equal(same.backup, undefined)
-    assert.equal(fs.existsSync(`${copyPath}.bak`), false)
-    assert.equal(fs.readFileSync(copyPath, 'utf8'), realManifest)
-    assert.equal(modelRegistry.describeWrite(same), 'manifest already declared 5 model(s)')
-
-    const settings = { 'cline-pass/glm-5.3': { contextWindow: 123456 } }
-    const written = modelRegistry.syncManifest({ manifestPath: copyPath, settings })
-    assert.equal(written.changed, true)
-    assert.equal(written.count, 5)
-    assert.equal(written.path, copyPath)
-    assert.equal(written.backup, `${copyPath}.bak`)
-    assert.equal(fs.readFileSync(`${copyPath}.bak`, 'utf8'), realManifest, 'the backup is the manifest as it was')
-    const doc = JSON.parse(fs.readFileSync(copyPath, 'utf8'))
-    assert.deepEqual(doc.contributes.providers[0].models, modelRegistry.registeredManifestModels(settings))
-    assert.equal(doc.contributes.providers[0].models.find((model) => model.id === 'cline-pass/glm-5.3').contextWindow, 123456)
-    assert.equal(modelRegistry.describeWrite(written), 'manifest now declares 5 model(s)')
-    // Nothing but the model list may change: a rewritten manifest that lost its
-    // tools or permissions would unregister half the plugin.
-    assert.equal(withoutModels(fs.readFileSync(copyPath, 'utf8')), withoutModels(realManifest))
-
-    // Writing the same settings again must be a no-op: waking the host for a file
-    // that already says the right thing is how a panel action turns into a reload.
-    const again = modelRegistry.syncManifest({ manifestPath: copyPath, settings })
-    assert.equal(again.changed, false)
-    assert.equal(again.count, 5)
-    assert.equal(modelRegistry.describeWrite(again), 'manifest already declared 5 model(s)')
-
-    // Deselecting a model shrinks what the manifest declares.
-    const smaller = modelRegistry.syncManifest({
-      manifestPath: copyPath,
-      settings: { 'cline-pass/minimax-m3': { registered: false } },
-    })
-    assert.equal(smaller.changed, true)
-    assert.equal(smaller.count, 4)
-    assert.deepEqual(
-      JSON.parse(fs.readFileSync(copyPath, 'utf8')).contributes.providers[0].models.map((model) => model.id),
-      catalog.DEFAULT_REGISTERED.filter((id) => id !== 'cline-pass/minimax-m3'),
-    )
-    assert.equal(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'), realManifest)
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+test("the generated config carries the ticked models with the host's own field names", () => {
+  // The host parses this with its `pi` source reader: a provider needs `baseUrl`,
+  // `api`, a non-empty `apiKey` and at least one model carrying an `id`, or the
+  // whole provider is dropped before the user ever sees it.
+  const payload = modelRegistry.importConfigPayload()
+  assert.deepEqual(Object.keys(payload), ['providers'])
+  const provider = payload.providers[modelRegistry.IMPORT_PROVIDER_ID]
+  assert.ok(provider, `the config must key its provider by ${modelRegistry.IMPORT_PROVIDER_ID}`)
+  assert.equal(provider.name, 'Cline Pass（本地网关）')
+  assert.equal(provider.api, 'chat_completions', 'the gateway is OpenAI compatible; the host only reads that value')
+  assert.equal(provider.baseUrl, protocol.GATEWAY_BASE_URL)
+  assert.equal(provider.baseUrl, 'http://127.0.0.1:41593/v1', 'the gateway address is fixed, not read from the manifest')
+  assert.equal(provider.apiKey, configModule.HOST_NO_AUTH_KEY, 'a provider with no secret is filtered out of the picker, so the key must be non-empty')
+  assert.ok(provider.apiKey.length > 0)
+  assert.equal(provider.headers, undefined, 'the gateway needs no extra header')
+  assert.deepEqual(
+    provider.models.map((model) => model.id),
+    catalog.DEFAULT_REGISTERED,
+    'the five defaults are the ones ticked out of the box, in catalog order',
+  )
+  for (const model of provider.models) {
+    // Only these keys: the reader knows nothing else, and `id` is the only
+    // spelling it accepts for a model id (`modelId`/`model` are not read).
+    assert.deepEqual(Object.keys(model), ['id', 'name', 'limit', 'reasoning', 'input'], `${model.id} fields`)
+    assert.deepEqual(Object.keys(model.limit), ['context', 'output'], `${model.id} limit fields`)
+    const published = catalog.catalogEntry(model.id)
+    assert.ok(published, `${model.id} is not in the catalog`)
+    assert.equal(model.name, published.name, `${model.id} name`)
+    // The window and the output cap are the published (models.dev) numbers, and
+    // writing them makes them the user's own values - which is what stops the
+    // host's catalog backfill from replacing them.
+    assert.equal(model.limit.context, published.contextWindow, `${model.id} window`)
+    assert.equal(model.limit.output, published.maxTokens, `${model.id} output`)
+    assert.equal(model.reasoning, catalog.thinkingLevelsFor(published).length > 1, `${model.id} reasoning`)
+    assert.deepEqual(model.input, published.supportsImages ? ['text', 'image'] : ['text'], `${model.id} input`)
   }
+  assert.deepEqual(provider.models.find((model) => model.id === MODEL), {
+    id: 'cline-pass/deepseek-v4.1-flash',
+    name: 'DeepSeek V4.1 Flash',
+    limit: { context: 1000000, output: 384000 },
+    reasoning: true,
+    input: ['text', 'image'],
+  })
 })
 
-test('syncManifest reports a manifest it cannot use instead of throwing', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'picp-manifest-bad-'))
-  const broken = path.join(dir, 'broken.json')
-  const noModels = path.join(dir, 'no-models.json')
-  try {
-    fs.writeFileSync(broken, '{ this is not json', 'utf8')
-    const bad = modelRegistry.syncManifest({ manifestPath: broken })
-    assert.equal(bad.changed, false)
-    assert.equal(typeof bad.error, 'string')
-    assert.ok(bad.error.length > 0)
-    assert.match(modelRegistry.describeWrite(bad), /^manifest not updated: /)
-    assert.equal(fs.readFileSync(broken, 'utf8'), '{ this is not json', 'a broken manifest must not be overwritten')
-    assert.equal(fs.existsSync(`${broken}.bak`), false)
-    fs.writeFileSync(noModels, JSON.stringify({ contributes: { providers: [{ id: 'x' }] } }), 'utf8')
-    const missing = modelRegistry.syncManifest({ manifestPath: noModels })
-    assert.equal(missing.changed, false)
-    assert.equal(missing.error, 'the manifest has no provider model list')
-    // A path that does not exist reports its own read error, again without throwing.
-    const absent = modelRegistry.syncManifest({ manifestPath: path.join(dir, 'nope.json') })
-    assert.equal(absent.changed, false)
-    assert.equal(typeof absent.error, 'string')
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+test('the generated config follows the ticks and the panel overrides, and writes nothing', () => {
+  const manifestPath = new URL('../manifest.json', import.meta.url)
+  const realManifest = fs.readFileSync(manifestPath, 'utf8')
+  const payload = modelRegistry.importConfigPayload({
+    'cline-pass/minimax-m3': { registered: false },
+    'cline-pass/glm-5.3': { contextWindow: 222222, maxTokens: 40000 },
+    'cline-pass/mimo-v2.6-pro': { registered: true, name: '我的模型' },
+  })
+  assert.deepEqual(
+    generatedIds(payload),
+    ['cline-pass/deepseek-v4.1-flash', 'cline-pass/deepseek-v4-pro', 'cline-pass/glm-5.3', 'cline-pass/kimi-k3', 'cline-pass/mimo-v2.6-pro'],
+    'the ticks decide what is in the config, in catalog order',
+  )
+  const models = payload.providers[modelRegistry.IMPORT_PROVIDER_ID].models
+  assert.deepEqual(models.find((model) => model.id === 'cline-pass/glm-5.3').limit, { context: 222222, output: 40000 })
+  assert.equal(models.find((model) => model.id === 'cline-pass/mimo-v2.6-pro').name, '我的模型')
+  assert.equal(modelRegistry.describeImportConfig(payload), '生成配置里现在有 5 个模型')
+  // Unticking everything leaves a provider the host would throw away, so the
+  // panel can say so instead of handing the user a config that does nothing.
+  const none = modelRegistry.importConfigPayload(
+    Object.fromEntries(catalog.DEFAULT_REGISTERED.map((id) => [id, { registered: false }])),
+  )
+  assert.deepEqual(none.providers[modelRegistry.IMPORT_PROVIDER_ID].models, [])
+  assert.equal(modelRegistry.describeImportConfig(none), '生成配置里现在没有模型')
+  assert.equal(modelRegistry.describeImportConfig({ providers: {} }), '生成配置里现在没有模型')
+  assert.equal(modelRegistry.describeImportConfig(undefined), '生成配置里现在没有模型')
+  // Generating is pure computation: nothing in the plugin's own directory moves.
+  assert.equal(fs.readFileSync(manifestPath, 'utf8'), realManifest, 'generating a config must not touch the manifest')
+  assert.equal(fs.existsSync(`${manifestPath}.bak`), false)
+})
+
+test('the shipped manifest declares no provider, and no code puts one back', () => {
+  // The plugin used to declare a provider here (empty, for the reason the header
+  // of src/models.js spells out). It declares none any more: that row is what the
+  // settings page showed next to the provider the user imports, and the host
+  // deletes it on the next sync of this plugin. With the declaration gone there is
+  // no place a model list could hide either.
+  const shippedManifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'))
+  assert.equal(shippedManifest.contributes.providers, undefined, 'no provider declaration means no declared model')
+  assert.equal(shippedManifest.permissions.includes('provider.register'), false)
+  // And nothing builds that list any more: a resurrected writer would put the
+  // plugin's models back into the picker, where they can neither be edited nor
+  // dispatched to a subagent.
+  const sources = [
+    fs.readFileSync(new URL('../src/models.js', import.meta.url), 'utf8'),
+    fs.readFileSync(new URL('../src/gateway.js', import.meta.url), 'utf8'),
+    fs.readFileSync(new URL('../main.js', import.meta.url), 'utf8'),
+  ].join('\n')
+  for (const gone of ['syncManifest', 'manifestModel', 'registeredManifestModels', 'describeWrite']) {
+    assert.equal(sources.includes(gone), false, `${gone} is gone: nothing writes a manifest model list`)
   }
+  // models.js is the one place that builds the config, and it stays a read: no
+  // filesystem at all, and the address comes from the single constant in
+  // protocol.js instead of from the manifest, so the JSON a user imports can never
+  // point at a port the gateway does not serve.
+  const registrySource = fs.readFileSync(new URL('../src/models.js', import.meta.url), 'utf8')
+  assert.equal(/writeFileSync|appendFileSync|readFileSync|mkdirSync/.test(registrySource), false, 'the generated config is computed, never written')
+  assert.equal(/require\('\.\.\/manifest\.json'\)/.test(registrySource), false, 'models.js never requires the manifest')
+  assert.equal(/require\('\.\/protocol\.js'\)/.test(registrySource), true, 'the address comes from protocol.js')
 })
 
 /* ------------------------------- entry-point wiring ------------------------------- */
-
 test('every declared tool and panel action has a branch in main.js', () => {
   // The manifest is not the only place a name has to exist: main.js keeps its own
   // tool map and its own dispatchers, and a name declared without a branch reaches
@@ -1184,29 +1236,32 @@ test('every declared tool and panel action has a branch in main.js', () => {
   }
 })
 
-test('setModel writes config.json and refreshes the manifest without rewriting it', async () => {
-  // `setModel` ends in `syncManifest`, which writes this plugin's own manifest.
-  // The patch below sets a value to what the catalog already publishes, so the
-  // refresh is a no-op and the shipped file stays byte-identical - which is the
-  // point: an edit that changed nothing must not rewrite the file the host reads.
+test('setModel writes config.json only, and the shipped manifest is untouched', async () => {
+  // The old behaviour wrote this plugin's own manifest on every save (and only
+  // took effect after a reload). A saved parameter now lands in `config.json`
+  // alone: the config the panel generates carries it to the host, so the file
+  // the host loads must not move a byte.
   const manifestPath = new URL('../manifest.json', import.meta.url)
   const before = fs.readFileSync(manifestPath, 'utf8')
-  assert.deepEqual(
-    JSON.parse(before).contributes.providers[0].models,
-    modelRegistry.registeredManifestModels(),
-    'refusing to exercise setModel against a manifest the defaults do not already describe',
+  assert.equal(
+    JSON.parse(before).contributes.providers,
+    undefined,
+    'the manifest declares no provider, so a setModel has nothing to keep in sync with it',
   )
   try {
-    const result = await gateway.ops.setModel({ model: 'cline-pass/glm-5.3', contextWindow: 1048576 })
+    const result = await gateway.ops.setModel({ model: 'cline-pass/glm-5.3', contextWindow: 123456 })
     assert.equal(result.ok, true)
     assert.equal(result.model, 'cline-pass/glm-5.3')
-    assert.equal(result.applied.contextWindow, 1048576)
-    assert.equal(result.manifest.changed, false)
-    assert.equal(result.summary, 'manifest already declared 5 model(s)')
+    assert.equal(result.applied.contextWindow, 123456)
+    assert.equal(result.summary, '生成配置里现在有 5 个模型')
     assert.equal(result.models.length, 14)
     assert.equal(result.models.find((model) => model.id === 'cline-pass/glm-5.3').edited.includes('contextWindow'), true)
-    assert.equal(configStore.get().modelSettings['cline-pass/glm-5.3'].contextWindow, 1048576)
-    assert.equal(fs.readFileSync(manifestPath, 'utf8'), before, 'the shipped manifest must survive a no-op setModel')
+    assert.equal(configStore.get().modelSettings['cline-pass/glm-5.3'].contextWindow, 123456)
+    // ...and the value the panel would hand the user is the saved one.
+    const payload = modelRegistry.importConfigPayload(configStore.get().modelSettings)
+    const glm = payload.providers[modelRegistry.IMPORT_PROVIDER_ID].models.find((model) => model.id === 'cline-pass/glm-5.3')
+    assert.equal(glm.limit.context, 123456)
+    assert.equal(fs.readFileSync(manifestPath, 'utf8'), before, 'the shipped manifest must survive a setModel')
     assert.equal(fs.existsSync(`${manifestPath}.bak`), false)
     // An unknown or missing model is refused before anything is written.
     assert.throws(() => gateway.ops.setModel({ model: 'cline-pass/nope' }), /unknown model/)
@@ -1533,7 +1588,7 @@ test('wiring smoke: a second gateway starts, serves its state and writes its led
     assert.equal(state.port, smoke.port)
     assert.equal(state.models.length, 14)
     assert.equal(state.models.filter((row) => row.registered).length, 5)
-    assert.equal(state.models[0].published.contextWindow, 1048576)
+    assert.equal(state.models[0].published.contextWindow, 1000000)
     const empty = smoke.ops.usage({ days: 0 })
     assert.equal(empty.ok, true)
     assert.equal(empty.rows, 0)

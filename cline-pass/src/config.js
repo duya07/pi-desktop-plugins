@@ -159,10 +159,12 @@ function createConfig({ dataDir, logger = () => {} } = {}) {
   }
 
   /**
-   * Write one model's parameter overrides (registered / window / output cap /
-   * images / thinking levels). The panel is the only caller; `manifest.json` is
-   * regenerated from these by `models.syncManifest`, which is what the host
-   * actually reads.
+   * Write one model's parameter overrides (write-into-config / window / output
+   * cap / images / thinking levels). The panel is the only caller; these values
+   * are what `models.importConfigPayload` turns into the config the user imports
+   * into PI-Desktop's model settings, and what the gateway honours at request
+   * time. Nothing here rewrites `manifest.json` any more - the plugin declares
+   * no models to the host.
    */
   function setModelSettings(id, patch) {
     const settings = { ...(config.modelSettings ?? {}) }

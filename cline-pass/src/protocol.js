@@ -21,6 +21,20 @@
 const BUILD_TAG = 'pi-1.0.0'
 
 /**
+ * Where this gateway listens - and therefore the base URL the generated import
+ * config points at.
+ *
+ * This used to live in `manifest.json` (`contributes.providers[0].baseUrl`) and
+ * be read back from there. The plugin declares no provider any more, so the
+ * manifest is no longer a source of truth for anything the gateway needs: the
+ * port is the one fixed fact about this build, spelled once here and derived,
+ * never repeated. The host reaches this gateway only because the *user-imported*
+ * config carries this URL.
+ */
+const GATEWAY_PORT = 41593
+const GATEWAY_BASE_URL = `http://127.0.0.1:${GATEWAY_PORT}/v1`
+
+/**
  * The gateway wraps some answers in a `{ data: ... }` envelope; unwrap it.
  * @param json - raw decoded response body.
  * @returns the OpenAI-shaped payload.
@@ -382,6 +396,8 @@ function normalizeSlug(value) {
 
 module.exports = {
   BUILD_TAG,
+  GATEWAY_PORT,
+  GATEWAY_BASE_URL,
   unwrapEnvelope,
   errorText,
   parseRouting,

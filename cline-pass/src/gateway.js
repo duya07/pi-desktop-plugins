@@ -2,8 +2,9 @@
  * The local OpenAI-compatible gateway.
  *
  * PI-Desktop sends model requests itself, so the only way a plugin can own the
- * request path is to be the provider: `manifest.json` declares a provider whose
- * base URL is this server, and every call the host makes lands here. This module
+ * request path is to be the provider the host has been told about: the *user*
+ * imports the config the panel generates (`src/models.js`), that config's
+ * `baseUrl` is this server, and every call the host makes lands here. This module
  * is therefore the ported DSH request path - channel pin, failover across
  * candidates, account pool, idle watchdog, request history - expressed as an
  * HTTP handler instead of an LLM adapter.
@@ -23,6 +24,7 @@ const path = require('node:path')
 
 const {
   BUILD_TAG,
+  GATEWAY_PORT,
   injectPrefs,
   buildAttempts,
   parseRouting,
@@ -36,7 +38,7 @@ const { createStore } = require('./store.js')
 const { createEngine, parseServerSentEvents, GatewayError } = require('./engine.js')
 const { createAccountPool, maskKey, keyFor, duplicateNames } = require('./config.js')
 const { createUsageLog, extractUsage } = require('./usage.js')
-const { effectiveModels, effortsFor, syncManifest, describeWrite } = require('./models.js')
+const { effectiveModels, effortsFor, importConfigPayload, describeImportConfig } = require('./models.js')
 const { summarizeLimits, summarizeAccount } = require('./quota.js')
 
 /** Requests may carry base64 images, so the cap is generous - but not absent. */
@@ -46,18 +48,12 @@ const QUOTA_CACHE_MS = 60000
 /** One account's quota read is a single GET; a slow one must not hold the panel. */
 const QUOTA_TIMEOUT_MS = 10000
 
-/** The port the manifest advertises, read back so the two can never disagree. */
-function manifestPort() {
-  try {
-    const manifest = require('../manifest.json')
-    const baseUrl = manifest?.contributes?.providers?.[0]?.baseUrl ?? ''
-    const match = /:(\d{2,5})\b/.exec(baseUrl)
-    if (match) return Number(match[1])
-  } catch {
-    /* fall through to the default below */
-  }
-  return 41593
-}
+/**
+ * The port the gateway listens on, from the one place that spells it out
+ * (`protocol.js`). Nothing reads `manifest.json` any more: the plugin declares
+ * no provider, so the manifest cannot advertise a port either.
+ */
+const LISTEN_PORT = GATEWAY_PORT
 
 /** The model id the upstream expects, accepting the host's own short spelling. */
 function normalizeModelId(model) {
@@ -75,8 +71,8 @@ function normalizeModelId(model) {
  *
  * `allowed` carries the model's published efforts, so a level the model never
  * advertised is clamped to the nearest one it did rather than dropped - the
- * host only offers levels it was told about, so a mismatch here means a stale
- * manifest rather than a bad request.
+ * host only offers levels it was told about, so a mismatch here means the
+ * imported config carries an older ladder rather than a bad request.
  */
 function normalizeReasoning(body, allowed) {
   const next = { ...body }
@@ -182,8 +178,6 @@ function sendJson(res, status, payload) {
 function createGateway({ configStore, logger = () => {}, instanceId = '', portOverride = -1 }) {
   const store = createStore({ historyLimit: configStore.get().historyLimit })
 
-  /** Where this plugin's own manifest lives: the host reads it on every load. */
-  const manifestPath = path.join(__dirname, '..', 'manifest.json')
   /** The request ledger, kept beside config.json in the plugin's data directory. */
   const ledger = createUsageLog({ dataDir: path.dirname(configStore.file), logger })
   /** The last official-quota reading, reused for `QUOTA_CACHE_MS`. */
@@ -195,7 +189,7 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
   }
   const pool = createAccountPool({ configStore, logger })
   const semaphore = createSemaphore(configStore.get().maxConcurrentRequests)
-  let port = Number.isInteger(Number(portOverride)) && Number(portOverride) >= 0 ? Math.floor(Number(portOverride)) : manifestPort()
+  let port = Number.isInteger(Number(portOverride)) && Number(portOverride) >= 0 ? Math.floor(Number(portOverride)) : LISTEN_PORT
   let server = null
   const sockets = new Set()
 
@@ -523,28 +517,22 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
       return status().models
     },
     /**
-     * Write one model's overrides and refresh this plugin's manifest.
+     * Write one model's overrides into this plugin's own `config.json`.
      *
-     * The host owns a plugin provider's parameters and refreshes them from the
-     * manifest on every plugin load, so writing the manifest is the only way an
-     * edit can reach the model picker. The response reports what was written
-     * rather than what was intended.
+     * Nothing outside `config.json` changes any more: the host no longer reads a
+     * model list from this plugin, so a saved parameter only has to be
+     * remembered here - the config the panel generates is what carries it to the
+     * host, and the user imports it themselves. The response reports what was
+     * written rather than what was intended.
      */
     setModel(patch = {}) {
       const id = normalizeModelId(patch.model)
       if (id === '') throw new GatewayError('model is required', 'INVALID_ARGUMENT')
       if (!catalogEntry(id)) throw new GatewayError(`unknown model "${id}"`, 'NOT_FOUND')
       const applied = configStore.setModelSettings(id, patch)
-      // The backup goes to the plugin's data directory, not next to the manifest:
-      // a stray manifest.json.bak would be picked up by the packager.
-      const write = syncManifest({
-        manifestPath,
-        settings: configStore.get().modelSettings,
-        logger,
-        backupPath: path.join(path.dirname(configStore.file), 'manifest.backup.json'),
-      })
-      logger('model settings updated', { model: id, applied, manifest: describeWrite(write) })
-      return { ok: true, model: id, applied, manifest: write, summary: describeWrite(write), models: ops.models() }
+      const summary = describeImportConfig(importConfigPayload(configStore.get().modelSettings))
+      logger('model settings updated', { model: id, summary })
+      return { ok: true, model: id, applied, summary, models: ops.models() }
     },
     /** Token and cost totals from the request ledger, with the newest rows. */
     usage({ days, limit, model } = {}) {
@@ -803,4 +791,4 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
   }
 }
 
-module.exports = { MAX_BODY_BYTES, manifestPort, normalizeModelId, normalizeReasoning, sseFrame, createGateway, GatewayError }
+module.exports = { MAX_BODY_BYTES, LISTEN_PORT, normalizeModelId, normalizeReasoning, sseFrame, createGateway, GatewayError }

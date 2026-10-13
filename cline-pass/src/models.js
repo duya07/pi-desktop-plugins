@@ -1,29 +1,33 @@
 /**
- * The model registry: which Cline Pass models this plugin registers with
- * PI-Desktop, and with which published parameters.
+ * The model registry: which Cline Pass models this plugin knows, with which
+ * parameters - and the PI-Desktop config the user imports to get them into the
+ * model picker.
  *
- * Why this module exists at all: a PI-Desktop plugin provider is *owned* by the
- * plugin. The host refreshes `providers.config_json` from `manifest.json` on
- * every plugin load (`crates/host-core/src/plugins/providers.rs`) and its
- * settings UI refuses to edit a plugin-owned provider - "This provider comes
- * from the plugin ..., which supplies its endpoint and models. Enable or
- * disable it on the Plugins page." So the only surface where the user can
- * change a model's context window, output cap or which models exist at all is
- * the manifest this plugin ships. Verified on 2026-10-13 against the host
- * binary, its renderer bundle and `~/.pi-desktop/pi.sqlite` (schema v17:
- * `providers.owner_plugin_id`, model params inside `config_json.models[]` with
- * `contextWindowSource`/`maxTokensSource` set to `user` or `catalog`).
+ * Why this module builds the config instead of feeding `manifest.json`: a
+ * PI-Desktop plugin provider is *owned* by the plugin. The host refreshes
+ * `providers.config_json` from the manifest on every plugin load and its settings
+ * UI refuses to edit a plugin-owned provider ("This provider comes from the
+ * plugin ..., which supplies its endpoint and models."), and - measured on 0.20.1
+ * - the sync drops `availableForSubagents` from a plugin provider's rows. So a
+ * model that arrives through the manifest can never be ticked for automatic AI
+ * dispatch, i.e. it is unusable for subagents, and the user has no settings-page
+ * entry to fix that.
  *
- * So: settings live in the plugin's own `config.json`, and this module turns
- * them into the manifest's model list, which the host reloads. Nothing is
- * guessed - the catalog holds what Cline publishes, the settings hold what the
- * user asked for, and the manifest is the merge.
+ * The way out is the one the host itself offers: 模型配置 → 从其他工具导入. The
+ * panel hands the user the JSON in {@link importConfigPayload}; the host parses
+ * it with its `pi`-source reader (`bindingFromPiModel`) and creates a provider
+ * the *user* owns - editable, and tickable for subagents. That is now the only
+ * provider this plugin produces: `contributes.providers` is gone from the
+ * manifest (and `provider.register` with it), so the settings page no longer
+ * carries an empty plugin row next to the imported one.
+ *
+ * Nothing is guessed: the catalog holds what Cline publishes, the settings hold
+ * what the user asked for, and the generated config is the merge.
  *
  * @module cline-pass/models
  */
-'use strict'
 
-const fs = require('node:fs')
+'use strict'
 
 const {
   MODEL_CATALOG,
@@ -33,6 +37,7 @@ const {
   defaultThinkingLevel,
   PI_THINKING_LEVELS,
 } = require('./catalog.js')
+const { GATEWAY_BASE_URL } = require('./protocol.js')
 
 /** The per-model keys the panel may override. */
 const SETTINGS_FIELDS = ['registered', 'contextWindow', 'maxTokens', 'supportsImages', 'thinkingLevels', 'defaultThinkingLevel']
@@ -48,6 +53,50 @@ const SETTINGS_FIELDS = ['registered', 'contextWindow', 'maxTokens', 'supportsIm
 const LIMITS = {
   contextWindow: { min: 1000, max: 100000000 },
   maxTokens: { min: 1, max: 100000000 },
+}
+
+/* ------------------------------ the generated config ------------------------------ */
+
+/**
+ * The provider key, label and wire protocol of the generated config.
+ *
+ * The id is deliberately *not* the plugin's own name: this block is what creates
+ * a provider, and the plugin no longer declares one (nothing would collide).
+ *
+ * `api` is pinned to `chat_completions`: the gateway speaks the OpenAI dialect,
+ * and the host's `pi` reader accepts `api | apiStyle | type` but only this value
+ * means "OpenAI compatible". The model ids stay fully qualified
+ * (`cline-pass/<slug>`), which is what the gateway routes on.
+ */
+const IMPORT_PROVIDER_ID = 'cline-pass-local'
+const IMPORT_PROVIDER_NAME = 'Cline Pass（本地网关）'
+const IMPORT_PROVIDER_API = 'chat_completions'
+
+/*
+ * Where the generated config points: `GATEWAY_BASE_URL` from `protocol.js`, which
+ * is also the port the gateway binds. It used to be read back from the manifest's
+ * provider block, which no longer exists - the one constant is now the only place
+ * the address is written, so the JSON a user imports cannot point at a port the
+ * gateway does not listen on.
+ */
+
+/**
+ * The placeholder key the imported provider carries.
+ *
+ * It must be non-empty: an imported provider without a secret is filtered out of
+ * the host's model picker entirely, while this exact value is the gateway's own
+ * "the host has no key" marker - so it keeps the provider usable *and* makes the
+ * gateway fall through to the plugin's account pool.
+ *
+ * Read lazily on purpose: `src/config.js` requires this module, so a top-level
+ * `require('./config.js')` here would see its half-built exports.
+ */
+function hostPlaceholderKey() {
+  try {
+    return require('./config.js').HOST_NO_AUTH_KEY
+  } catch {
+    return 'pi-desktop-no-auth'
+  }
 }
 
 /** Every model id the catalog knows. */
@@ -168,86 +217,75 @@ function effortsFor(model) {
   return (model?.thinkingLevels ?? []).filter((level) => level !== 'off')
 }
 
-/** One manifest model entry, with the fields the host's `ModelBinding` knows. */
-function manifestModel(model) {
-  return {
-    id: model.id,
-    name: model.name,
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens,
-    supportsImages: model.supportsImages,
-    thinkingLevels: model.thinkingLevels,
-    defaultThinkingLevel: model.defaultThinkingLevel,
-  }
-}
-
-/** The manifest entries for every registered model, in catalog order. */
-function registeredManifestModels(settings = {}) {
-  return effectiveModels(settings)
-    .filter((model) => model.registered)
-    .map(manifestModel)
-}
-
-/** A short human summary of one write, for the panel and the log. */
-function describeWrite(result) {
-  if (result.error) return `manifest not updated: ${result.error}`
-  if (!result.changed) return `manifest already declared ${result.count} model(s)`
-  return `manifest now declares ${result.count} model(s)`
+/**
+ * The models the generated config carries: the ones the user ticked, in catalog
+ * order.
+ *
+ * `registered` (the panel's checkbox, `config.json`'s `modelSettings[].registered`)
+ * means exactly "this one goes into the JSON the user imports" - it no longer
+ * feeds any host-facing file.
+ */
+function registeredModels(settings = {}) {
+  return effectiveModels(settings).filter((model) => model.registered)
 }
 
 /**
- * Write the effective model list into this plugin's own `manifest.json`.
+ * The `%USERPROFILE%\.pi\agent\models.json` body for the ticked models.
  *
- * The host reads the manifest when it loads the plugin, which is exactly what
- * happens after a development-plugin save - so this call is what makes the
- * settings take effect in the model picker. The previous manifest is kept as
- * `<manifest>.bak` so a bad edit can be undone by hand.
+ * The shape is the host's `pi` source, field by field:
+ *   - `providers.<id>` with `name`, `baseUrl`, `api`, `apiKey` and at least one
+ *     model - a provider without a model is dropped by the parser;
+ *   - a model needs `id` (that is the only spelling the reader accepts), plus
+ *     `limit.context` / `limit.output` for the window and the output cap,
+ *     `reasoning` for "offer thinking levels", and `input` for image support.
+ * Explicit `limit` values are kept as the user's own numbers, so the host's
+ * models.dev backfill does not overwrite them.
  *
- * @param manifestPath - absolute path to this plugin's manifest.
+ * Pure computation: this never touches the filesystem, so the panel can call it
+ * as often as it likes and the user decides when (and whether) to save it.
+ *
  * @param settings - the per-model overrides from `config.json`.
- * @param logger - `(message, detail?) => void`.
+ * @returns the config object, ready for `JSON.stringify(payload, null, 2)`.
  */
-function syncManifest({ manifestPath, settings = {}, logger = () => {}, backupPath = '' } = {}) {
-  let doc
-  try {
-    doc = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
-  } catch (error) {
-    return { changed: false, count: 0, error: error instanceof Error ? error.message : String(error) }
+function importConfigPayload(settings = {}) {
+  return {
+    providers: {
+      [IMPORT_PROVIDER_ID]: {
+        name: IMPORT_PROVIDER_NAME,
+        baseUrl: GATEWAY_BASE_URL,
+        api: IMPORT_PROVIDER_API,
+        apiKey: hostPlaceholderKey(),
+        models: registeredModels(settings).map((model) => ({
+          id: model.id,
+          name: model.name,
+          limit: { context: model.contextWindow, output: model.maxTokens },
+          // The host's own ladder for an imported model is its generic one; the
+          // catalog's tuned ladder stays this plugin's own reading of the model.
+          reasoning: model.thinkingLevels.length > 1,
+          input: model.supportsImages ? ['text', 'image'] : ['text'],
+        })),
+      },
+    },
   }
-  const provider = Array.isArray(doc?.contributes?.providers) ? doc.contributes.providers[0] : null
-  if (!provider || !Array.isArray(provider.models)) {
-    return { changed: false, count: 0, error: 'the manifest has no provider model list' }
-  }
-  const next = registeredManifestModels(settings)
-  const current = provider.models
-  if (JSON.stringify(current) === JSON.stringify(next)) {
-    return { changed: false, count: next.length, path: manifestPath }
-  }
-  // Beside the manifest unless the caller says otherwise: the gateway keeps its
-  // backup in the plugin's data directory, so a backup never rides into a package.
-  const backup = backupPath || `${manifestPath}.bak`
-  try {
-    fs.writeFileSync(backup, fs.readFileSync(manifestPath), 'utf8')
-    provider.models = next
-    fs.writeFileSync(manifestPath, `${JSON.stringify(doc, null, 2)}\n`, 'utf8')
-  } catch (error) {
-    return { changed: false, count: next.length, error: error instanceof Error ? error.message : String(error), path: manifestPath }
-  }
-  logger('manifest model list rewritten', { count: next.length, registered: next.map((model) => model.id), backup })
-  return { changed: true, count: next.length, path: manifestPath, backup }
+}
+
+/** How many models the generated config would carry, as a sentence. */
+function describeImportConfig(payload) {
+  const models = payload?.providers?.[IMPORT_PROVIDER_ID]?.models
+  const count = Array.isArray(models) ? models.length : 0
+  return count === 0 ? '生成配置里现在没有模型' : `生成配置里现在有 ${count} 个模型`
 }
 
 module.exports = {
   SETTINGS_FIELDS,
   LIMITS,
+  IMPORT_PROVIDER_ID,
   modelIds,
   defaultsFor,
   sanitizeLevels,
   sanitizeSettings,
   effectiveModels,
   effortsFor,
-  manifestModel,
-  registeredManifestModels,
-  describeWrite,
-  syncManifest,
+  importConfigPayload,
+  describeImportConfig,
 }

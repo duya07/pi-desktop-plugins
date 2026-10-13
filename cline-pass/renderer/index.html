@@ -300,6 +300,10 @@
       .host-sync.ok { color: var(--ok); }
       .host-sync.warn { color: var(--warn); }
       .host-sync.muted { color: var(--ink-soft); }
+      #config-json { font-family: var(--mono); font-size: 12px; line-height: 1.55; max-height: 320px; overflow: auto; resize: vertical; width: 100%; min-height: 140px; white-space: pre; word-break: break-all; overflow-wrap: anywhere; }
+      #config-json[hidden] { display: none; }
+      .generate-steps { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.7; }
+      .generate-steps li { overflow-wrap: anywhere; }
       @media (prefers-reduced-motion: reduce) {
         .spin { animation: none; }
         .quota-fill { transition: none; }
@@ -411,14 +415,29 @@
               </div>
             </div>
           </div>
+          <div class="card" id="generate-config-card">
+            <h3>生成配置（导入到模型配置）</h3>
+            <div class="hint">插件不再自动注册模型，用下面这个按钮生成一份 JSON，拿到 PI-Desktop 的 模型配置 →「从其他工具导入」→ 扫描 → 勾选「Cline Pass（本地网关）」→ 导入，就会得到你自己的 provider（可编辑、可勾「可供 AI 自动调度」，子代理才会用它）。网关必须处于运行状态。</div>
+            <div class="row"><button class="primary" id="generate-config">生成配置</button><button class="primary" id="write-config">写入文件</button><button id="copy-config">复制</button><span class="hint" id="generate-config-meta"></span></div>
+            <div class="hint" id="generate-config-path" hidden></div>
+            <textarea id="config-json" readonly hidden placeholder="点「生成配置」后这里会出现 JSON"></textarea>
+            <div class="hint" id="generate-config-hint"></div>
+            <ol class="generate-steps">
+              <li>点「生成配置」→ 再点「写入文件」：第一次会弹系统目录选择器，选 <b>C:\Users\&lt;你&gt;\.pi\agent</b>（目录不存在就先建一个）；</li>
+              <li>打开 设置 → 模型配置 →「从其他工具导入」→ 扫描 → 勾选「Cline Pass（本地网关）」→ 导入所选；</li>
+              <li>导入后在该 provider 的模型卡里勾上「可供 AI 自动调度」（子代理才会用它）；</li>
+              <li>不想授权写盘就用「复制」自己存成同一个路径；导入完成后这个文件可以删掉。</li>
+            </ol>
+            <div class="hint">本插件只往你选的那个目录里写一个 <b>models.json</b>（不读、不删别的文件）。目录选择器是模态窗口，请在 30 秒内选完；万一面板提示超时，直接再点一次「写入文件」——目录已经记住，这次是秒写。插件重载后需要重新选一次目录。</div>
+            <div class="hint">导入的 provider 是"你自己的"，插件不再自动注册模型；网关必须处于运行状态（顶部的状态行会显示）。</div>
+          </div>
           <div class="card" id="model-settings">
-            <h3>模型参数（自填 + 注册）</h3>
+        <h3>模型参数（写进生成的配置）</h3>
             <div class="hint">
-              这里改的是宿主启动时读取的 manifest：勾选「注册进宿主模型选择器」的模型才会出现在宿主的模型选择器里；未注册的模型仍可通过网关直接调用，但在宿主列表中不可见。另请注意：若宿主中已存在同 id 的自建 provider 模型，请求可能绕过本网关直接由宿主处理，此时 pin、账号池和用量统计均不会记录（可在「用量」页确认是否有数据）。
-              保存时只提交已改动的字段。宿主的 provider 配置仅在插件安装/启用或宿主启动时同步，开发时的热重载不会刷新。如需让保存后的新参数/新模型在模型选择器中生效，请到插件页停用再启用本插件，或重启 PI-Desktop。
+              这些参数会写进插件自己的配置，并出现在「生成配置」产出的 JSON 里；导入到你自己的 provider 后，宿主模型选择器才看得到它们。保存时只提交已改动的字段。
             </div>
             <div class="hint">
-              「已改」= 这个字段被本面板覆盖过；「官方值」= Cline 目录里的值，只作对照，不会自动回写。档位控件来自目录：effort 是滑杆、toggle 是开关、none 表示该模型没有思考档位。
+          「已改」= 这个字段被本面板覆盖过；「官方值」= models.dev 的值，只作对照，不会自动回写。档位控件来自 models.dev 的 reasoning_options：effort 是滑杆、toggle 是开关、none 表示该模型没有思考档位。
             </div>
             <div id="model-settings-list"></div>
           </div>
@@ -527,7 +546,7 @@
             <h3>怎么用</h3>
             <div class="hint">
               1. 本 provider 已是 <code>authKind: "none"</code>，无需在宿主「设置 → 模型 / Providers」里填密钥；密钥只在插件面板「账号池」里添加内联账号（宿主仍会发一个占位 Authorization 头，插件会忽略）。<br />
-              2. 在模型选择里选 cline-pass/* 的模型；请求会经本机网关转发到上游，pin / failover / 账号轮询都在网关里生效。<br />
+              2. 先到「模型与通道」点「生成配置」生成 JSON，拿到 PI-Desktop 的 模型配置 →「从其他工具导入」导入，得到你自己的 provider 后再在模型选择器里选导入后的模型；请求会经本机网关转发到上游，pin / failover / 账号轮询都在网关里生效。<br />
               3. 网关只监听 127.0.0.1；插件卸载或禁用时端口会被释放。
             </div>
           </div>
@@ -703,29 +722,27 @@
             el.hidden = false;
             return;
           }
-          // Nothing declared means nothing to sync. Without this branch the
-          // next one would blame the host for the user's own unregistration.
           if (total === 0) {
             el.className = "host-sync muted";
-            el.textContent = "本插件当前没有注册任何模型（在模型卡里勾选“注册进宿主模型选择器”并保存，重载插件后生效）";
+            el.textContent = "还没有勾选任何模型：勾上「写进生成的配置」并保存后，用上面的「生成配置」生成 JSON 再导入。";
             el.hidden = false;
             return;
           }
           if (synced === 0) {
             el.className = "host-sync warn";
-            el.textContent = "宿主尚未同步本插件的模型，模型选择器里看不到它们（在设置页重开插件或重启 PI-Desktop 后生效）";
+            el.textContent = "宿主里还没有这些模型：用上面的「生成配置」→ 模型配置页「从其他工具导入」";
             el.hidden = false;
             return;
           }
           if (missing.length === 0) {
             el.className = "host-sync ok";
-            el.textContent = "宿主模型已同步：" + synced + "/" + total + " 已注册，模型选择器里可见";
+            el.textContent = "宿主模型已同步：" + synced + "/" + total + " 已导入，模型选择器里可见";
             el.hidden = false;
             return;
           }
           var shown = missing.slice(0, 2).join("、");
           el.className = "host-sync warn";
-          el.textContent = "宿主模型部分同步：已注册 " + synced + "/" + total + "，缺 " + shown + "（重开设置页或重启 PI-Desktop 后生效）";
+          el.textContent = "宿主模型部分同步：已导入 " + synced + "/" + total + "，缺 " + shown + "（用上面的「生成配置」重新导入，或重开设置页）";
           el.hidden = false;
         }
 
@@ -947,7 +964,7 @@
         }
 
 
-        /* ------------------------- 模型参数（自填 + 注册） ------------------------- */
+        /* ------------------------ 模型参数（写进生成的配置） ----------------------- */
 
         var LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
         var CW_PRESETS = [{ label: "128k", value: 128000 }, { label: "256k", value: 256000 }, { label: "312k", value: 312000 }, { label: "500k", value: 500000 }, { label: "1M", value: 1000000 }];
@@ -1050,7 +1067,7 @@
           var summary = node("summary");
           summary.appendChild(node("span", "mono", model.id));
           if (model.name && model.name !== model.id) summary.appendChild(node("span", "hint", model.name));
-          summary.appendChild(pillTag(model.registered === true ? "已注册：出现在宿主模型选择器里" : "未注册：不会出现在宿主模型选择器里", model.registered === true ? "ok" : "warn"));
+          summary.appendChild(pillTag(model.registered === true ? "已勾选：会写进「生成配置」" : "未勾选：不会写进「生成配置」", model.registered === true ? "ok" : "warn"));
           if (model.fallback === true) summary.appendChild(pillTag("兜底默认值", "bad"));
           if ((model.edited || []).length > 0) summary.appendChild(pillTag("已改：" + model.edited.join("、"), "warn"));
           summary.appendChild(pillTag("档位控件 " + (model.lever || "none")));
@@ -1063,7 +1080,7 @@
             body.appendChild(node("div", "hint warn-text", "该模型在 Cline 官方目录没有独立条目，窗口/输出是兜底默认值，别当真实能力。"));
           }
           if (model.registered !== true) {
-            body.appendChild(node("div", "hint warn-text", "未注册：保存后也不会出现在宿主的模型选择器里，要先勾上“注册进宿主模型选择器”再保存。"));
+            body.appendChild(node("div", "hint warn-text", "未勾选：不会写进「生成配置」里（勾上并保存后重新生成配置即可）。"));
           }
 
           var stack = node("div", "model-stack");
@@ -1082,8 +1099,7 @@
           registered.type = "checkbox";
           registered.dataset.field = "registered";
           registered.checked = model.registered === true;
-          stack.appendChild(addField("注册进宿主模型选择器", registered, "registered"));
-
+          stack.appendChild(addField("写进生成的配置", registered, "registered"));
           var aliasInput = node("input");
           aliasInput.type = "text";
           aliasInput.dataset.field = "alias";
@@ -1096,7 +1112,7 @@
           });
           var aliasWrap = node("div");
           aliasWrap.appendChild(aliasInput);
-          var aliasHint = node("div", "hint", aliasInput.value.length + "/60 · 对应 manifest 的 name（宿主落库为 alias），最长 60 字符，宿主会截断");
+          var aliasHint = node("div", "hint", aliasInput.value.length + "/60 · 对应生成配置里的 name（导入后宿主落库为 alias），最长 60 字符，宿主会截断");
           aliasWrap.appendChild(aliasHint);
           stack.appendChild(addField("显示名（别名）", aliasWrap, "name"));
 
@@ -1206,8 +1222,8 @@
           refreshLevelChoices();
 
           var hostBox = node("div", "host-only");
-          hostBox.appendChild(node("div", "host-only-title", "宿主专有能力（插件 provider 无法声明）"));
-          hostBox.appendChild(node("div", "hint", "插件的 manifest 只能声明 7 个字段（id、name、contextWindow、maxTokens、supportsImages、thinkingLevels、defaultThinkingLevel），其余字段即使写进 manifest，宿主的 host-core 在反序列化成定长结构时也会丢掉，所以这里只作说明，不提供开关。"));
+          hostBox.appendChild(node("div", "host-only-title", "宿主专有能力（导入后到你自己的 provider 里改）"));
+          hostBox.appendChild(node("div", "hint", "这几个字段属于宿主：插件的 manifest 只声明 7 个字段（id、name、contextWindow、maxTokens、supportsImages、thinkingLevels、defaultThinkingLevel），其余即使写进去，host-core 反序列化成定长结构时也会丢掉（availableForSubagents 就是这样被丢掉的，真机对照实验过）。所以这里不给开关 —— 用「生成配置」把模型导入到你自己的 provider 之后，到 设置 → 模型配置 的那张模型卡里勾。"));
           var hostGrid = node("div", "host-only-grid");
           function roItem(text, checked) {
             var span = node("span", "host-only-item");
@@ -1361,17 +1377,21 @@
             log(id + "：这次保存没有确认写入，面板上的值保持原样（原因见上面那行）。");
             return;
           }
-          var manifest = result.manifest || {};
-          if (manifest.error) {
-            log("【保存失败 · manifest】" + id + " 的 " + keys.join("、") + " 没写进 manifest：" + manifest.error + "（路径 " + (manifest.path || "—") + "）→ 宿主模型选择器不会看到这次改动。");
-          } else if (manifest.changed === true) {
-            log(id + "：已保存 " + keys.join("、") + "；" + (result.summary || "manifest 已更新") + " → manifest 已写入。注意：宿主 provider 行只在插件安装/启用或宿主启动时同步，开发热重载不会刷新它 —— 要让模型选择器看到这次改动，请到插件页把本插件停用再启用（或重启 PI-Desktop）。旧 manifest 备份：" + (manifest.backup || "—"));
-          } else {
-            log(id + "：已保存 " + keys.join("、") + "；" + (result.summary || "manifest 不用改"));
-          }
+          // Nothing rewrites manifest.json any more: these parameters live in the
+          // plugin's own config and reach the host only through the generated
+          // import config. So a save needs no plugin reload - it wants a fresh
+          // "生成配置" (and, if the provider was already imported, a re-import).
+          log(
+            id +
+              "：已保存 " +
+              keys.join("、") +
+              "；" +
+              (result.summary || "参数已写入插件配置") +
+              " → 点上面的「生成配置」拿新的 JSON 再导入一次，宿主模型选择器才会看到这次改动。",
+          );
           var applied = result.applied && typeof result.applied === "object" ? Object.keys(result.applied) : [];
           var dropped = keys.filter(function (key) { return applied.indexOf(key) < 0; });
-          if (dropped.length > 0) log("【注意】" + id + " 的 " + dropped.join("、") + " 被服务端忽略了（值不合法或超出允许范围），没有写进 manifest。");
+          if (dropped.length > 0) log("【注意】" + id + " 的 " + dropped.join("、") + " 被服务端忽略了（值不合法或超出允许范围），没有写进插件配置。");
           if (Array.isArray(result.models) && result.models.length > 0 && state.status) {
             state.status.models = result.models;
             renderStatus();
@@ -2050,11 +2070,80 @@
 
         document.getElementById("usage-refresh").onclick = function () { loadUsage(); };
         document.getElementById("usage-clear").onclick = function () { clearUsage(); };
-        document.getElementById("usage-days").onchange = function () { loadUsage(); };
-
         // The manual read must not answer from the gateway's cache.
         document.getElementById("quota-refresh").onclick = function () { loadQuota(true); };
 
+        /* ------------------------- 生成配置（导入到模型配置） ------------------------- */
+        function copyGenerateConfig() {
+          var el = document.getElementById("config-json");
+          var text = el && el.value ? el.value : "";
+          if (!text) { log("还没有可复制的配置，先点「生成配置」。"); return; }
+          var btn = document.getElementById("copy-config");
+          function done(msg) {
+            log(msg);
+            if (btn) {
+              var orig = btn.textContent;
+              btn.textContent = "已复制";
+              window.setTimeout(function () { if (document.contains(btn) && !busy.active) btn.textContent = orig; }, 1200);
+            }
+          }
+          try {
+            if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+              navigator.clipboard.writeText(text).then(function () { done("已复制配置 JSON。"); }, function () { log("剪贴板被拒绝，请手动全选复制。"); });
+              return;
+            }
+          } catch (e) { /* fall through */ }
+          log("剪贴板不可用，请手动全选复制。");
+        }
+        function renderGenerateConfig(result) {
+          var pathEl = document.getElementById("generate-config-path");
+          var metaEl = document.getElementById("generate-config-meta");
+          var ta = document.getElementById("config-json");
+          var hintEl = document.getElementById("generate-config-hint");
+          if (!result || result.ok !== true) {
+            if (metaEl) metaEl.textContent = "";
+            if (pathEl) { pathEl.textContent = result && result.error ? "失败：" + result.error : "生成失败"; pathEl.hidden = false; }
+            if (ta) { ta.value = ""; ta.hidden = false; }
+            if (hintEl) hintEl.textContent = result && result.error ? result.error : "生成失败，请重试。";
+            if (result && result.error) log("生成配置失败：" + result.error);
+            return;
+          }
+          var models = Array.isArray(result.models) ? result.models : [];
+          var json = typeof result.json === "string" ? result.json : "";
+          if (metaEl) metaEl.textContent = models.length === 0 ? "还没有勾选任何模型" : models.length + " 个模型";
+          if (pathEl) { pathEl.textContent = "目标路径：" + (result.path || ""); pathEl.hidden = false; }
+          if (ta) { ta.value = json; ta.hidden = false; }
+          if (hintEl) {
+            if (models.length === 0) hintEl.textContent = "还没有勾选任何模型：勾上「写进生成的配置」并保存后再生成。";
+            else hintEl.textContent = "已生成 " + models.length + " 个模型，路径：" + (result.path || "");
+          }
+          log("已生成配置：" + (result.path || "") + "（" + models.length + " 个模型）");
+        }
+        document.getElementById("generate-config").onclick = function () {
+          if (!beginBusy("正在生成配置", this)) return;
+          release(run({ action: "generateConfig" }, 20000)).then(function (result) {
+            if (result) renderGenerateConfig(result);
+          });
+        };
+        document.getElementById("copy-config").onclick = function () { copyGenerateConfig(); };
+
+        /* The one write this plugin ever performs: models.json in the directory
+           the user picks. `quiet` keeps run() from logging the failure twice. */
+        function renderWriteConfig(result) {
+          if (result && result.ok === true) {
+            log("已写入 " + (result.path || "") + "（" + (result.bytes || 0) + " 字节，" + (result.models || 0) + " 个模型）→ 去 设置 → 模型配置 →「从其他工具导入」→ 扫描。");
+            return;
+          }
+          var message = result && result.error ? String(result.error) : "写入失败，请重试。";
+          if (message.indexOf("取消") >= 0) log("没有选择目录（已取消）。再点一次「写入文件」，选 ~/.pi/agent 目录。");
+          else log("写入文件失败：" + message);
+        }
+        document.getElementById("write-config").onclick = function () {
+          if (!beginBusy("正在写入文件", this)) return;
+          release(run({ action: "writeConfig" }, 25000, true)).then(function (result) {
+            if (result) renderWriteConfig(result);
+          });
+        };
         /* Keep the host's title-bar capsule readable by echoing the page colours. */
         (function retint() {
           var lastBackground = "";

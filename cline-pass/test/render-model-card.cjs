@@ -32,7 +32,9 @@ const PAGE = fs.readFileSync(RENDERER, 'utf8')
 const scriptOpen = PAGE.indexOf('<script>', PAGE.indexOf('</head>'))
 const scriptClose = PAGE.lastIndexOf('</script>')
 const pageScript = PAGE.slice(PAGE.indexOf('>', scriptOpen) + 1, scriptClose)
-const start = pageScript.search(/\/\* -+ 模型参数（自填 \+ 注册） -+ \*\//)
+// Anchor on the label only: the banner's wording is decoration, the block's
+// position between this banner and the next one is what this test needs.
+const start = pageScript.search(/\/\* -+ 模型参数/)
 if (start < 0) throw new Error('model-parameter block not found in the panel script')
 const tail = pageScript.slice(start)
 const end = tail.search(/\/\* -+ 用量 -+ \*\//)

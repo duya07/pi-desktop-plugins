@@ -28,7 +28,6 @@ if (start < 0) {
   console.log('FAIL  renderHostSync not found in the panel script (red phase)')
   console.log('\n0 OF 1 HOST SYNC RENDER CHECK(S) FAILED')
   process.exitCode = 1
-  // still exit to signal red
   throw new Error('renderHostSync not found')
 }
 let end = pageScript.indexOf('\n        function renderStatus', start)
@@ -84,49 +83,44 @@ function reset(host) {
   hostEl.textContent = ''
   hostEl.hidden = true
   state.status = { host: host }
-  // also test when status.host is directly the value; if host is undefined we want missing field
   if (host === undefined) state.status = {}
   if (host === null) state.status = { host: null }
 }
 
 function render(host) {
   reset(host)
-  // when host is undefined, state.status has no host field
   if (host === undefined) state.status = {}
   else state.status = { host: host }
-  // special case: host is string 'no-object' means set non-object
-  // we handle via caller
   api.renderHostSync()
   return { text: hostEl.textContent, cls: hostEl.className, hidden: !!hostEl.hidden }
 }
 
-// 1. ok true full sync 5/5
+// 1. ok true full sync 5/5 — 进新文案：已导入
 let out = render({ ok: true, synced: 5, total: 5, missing: [], error: '' })
 check(out.hidden === false, 'ok full: element visible')
 check(out.cls.indexOf('host-sync') >= 0 && out.cls.indexOf('ok') >= 0, 'ok full: class contains host-sync and ok (got "' + out.cls + '")')
-check(out.text === '宿主模型已同步：5/5 已注册，模型选择器里可见', 'ok full: text "宿主模型已同步：5/5 已注册，模型选择器里可见" (got "' + out.text + '")')
+check(out.text === '宿主模型已同步：5/5 已导入，模型选择器里可见', 'ok full: text "宿主模型已同步：5/5 已导入，模型选择器里可见" (got "' + out.text + '")')
 check(out.text.indexOf('undefined') < 0, 'ok full: no undefined in text')
 
-// 2. ok true partial 3/5 missing 3 ids -> only first 2 shown
+// 2. ok true partial 3/5 missing 3 ids -> only first 2 shown — 带生成配置重导提示
 out = render({ ok: true, synced: 3, total: 5, missing: ['m-a', 'm-b', 'm-c'], error: '' })
 check(out.hidden === false, 'partial: element visible')
 check(out.cls.indexOf('warn') >= 0, 'partial: class contains warn (got "' + out.cls + '")')
-check(out.text === '宿主模型部分同步：已注册 3/5，缺 m-a、m-b（重开设置页或重启 PI-Desktop 后生效）', 'partial: text with first 2 ids (got "' + out.text + '")')
+check(out.text === '宿主模型部分同步：已导入 3/5，缺 m-a、m-b（用上面的「生成配置」重新导入，或重开设置页）', 'partial: text with first 2 ids (got "' + out.text + '")')
 check(out.text.indexOf('m-c') < 0, 'partial: third id not shown (got "' + out.text + '")')
 check(out.text.indexOf('3/5') >= 0, 'partial: uses real synced/total 3/5')
 
-// 3. ok true synced 0
+// 3. ok true synced 0 — 宿主尚未导入
 out = render({ ok: true, synced: 0, total: 5, missing: [], error: '' })
 check(out.hidden === false, 'synced 0: element visible')
 check(out.cls.indexOf('warn') >= 0, 'synced 0: class contains warn (got "' + out.cls + '")')
-check(out.text === '宿主尚未同步本插件的模型，模型选择器里看不到它们（在设置页重开插件或重启 PI-Desktop 后生效）', 'synced 0: text exact (got "' + out.text + '")')
+check(out.text === '宿主里还没有这些模型：用上面的「生成配置」→ 模型配置页「从其他工具导入」', 'synced 0: text exact (got "' + out.text + '")')
 
-// 3b. ok true but nothing declared: the picker is empty because the panel
-//     registered no model, so blaming the host would be wrong.
+// 3b. ok true but nothing declared: nothing勾选
 out = render({ ok: true, synced: 0, total: 0, missing: [], error: '' })
 check(out.hidden === false, 'no declared models: element visible')
 check(out.cls.indexOf('muted') >= 0, 'no declared models: class contains muted (got "' + out.cls + '")')
-check(out.text === '本插件当前没有注册任何模型（在模型卡里勾选“注册进宿主模型选择器”并保存，重载插件后生效）', 'no declared models: text exact (got "' + out.text + '")')
+check(out.text === '还没有勾选任何模型：勾上「写进生成的配置」并保存后，用上面的「生成配置」生成 JSON 再导入。', 'no declared models: text exact (got "' + out.text + '")')
 
 // 4. ok false with error
 out = render({ ok: false, synced: 0, total: 5, missing: [], error: 'no models.list' })

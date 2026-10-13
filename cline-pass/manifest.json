@@ -31,85 +31,6 @@
     "height": 780
   },
   "contributes": {
-    "providers": [
-      {
-        "id": "cline-pass",
-        "name": "Cline Pass（本地网关）",
-        "category": "Cline Pass",
-        "description": "经由本插件本地网关的 Cline Pass 订阅模型：通道 pin 与 failover、账号池、思考档位映射。",
-        "baseUrl": "http://127.0.0.1:41593/v1",
-        "apiStyle": "chat_completions",
-        "authKind": "none",
-        "models": [
-          {
-            "id": "cline-pass/deepseek-v4.1-flash",
-            "name": "DeepSeek V4.1 Flash",
-            "contextWindow": 1048576,
-            "maxTokens": 943718,
-            "supportsImages": true,
-            "thinkingLevels": [
-              "off",
-              "low",
-              "high",
-              "max"
-            ],
-            "defaultThinkingLevel": "low"
-          },
-          {
-            "id": "cline-pass/deepseek-v4-pro",
-            "name": "DeepSeek V4 Pro",
-            "contextWindow": 1048576,
-            "maxTokens": 384000,
-            "supportsImages": false,
-            "thinkingLevels": [
-              "off",
-              "high",
-              "xhigh"
-            ],
-            "defaultThinkingLevel": "high"
-          },
-          {
-            "id": "cline-pass/glm-5.3",
-            "name": "GLM-5.3",
-            "contextWindow": 1048576,
-            "maxTokens": 943718,
-            "supportsImages": false,
-            "thinkingLevels": [
-              "off",
-              "low",
-              "high",
-              "max"
-            ],
-            "defaultThinkingLevel": "low"
-          },
-          {
-            "id": "cline-pass/kimi-k3",
-            "name": "Kimi K3",
-            "contextWindow": 1048576,
-            "maxTokens": 943718,
-            "supportsImages": true,
-            "thinkingLevels": [
-              "off",
-              "low",
-              "high",
-              "max"
-            ],
-            "defaultThinkingLevel": "low"
-          },
-          {
-            "id": "cline-pass/minimax-m3",
-            "name": "MiniMax-M3",
-            "contextWindow": 1048576,
-            "maxTokens": 512000,
-            "supportsImages": true,
-            "thinkingLevels": [
-              "off"
-            ],
-            "defaultThinkingLevel": "off"
-          }
-        ]
-      }
-    ],
     "services": [
       {
         "id": "gateway",
@@ -421,13 +342,19 @@
     ]
   },
   "permissions": [
-    "provider.register",
     "background.service",
     "agent.tool.register",
     "ui.panel",
     "notify",
-    "models.list"
+    "models.list",
+    "fs.read",
+    "fs.write"
   ],
+  "fs": {
+    "write": {
+      "root": "userSelected"
+    }
+  },
   "engines": {
     "piDesktop": ">=0.1.0"
   },

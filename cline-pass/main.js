@@ -1,34 +1,42 @@
 /**
  * cline-pass - PI-Desktop entry.
  *
- * This is the port of the DSH plugin `dsh-cline-pass` (0.2.5-p3, MIT) to
- * PI-Desktop. The harness seam it used to own (an LLM provider route) does not
- * exist here: a PI-Desktop plugin can only *declare* a provider, and the host
- * sends the requests itself. So the ported request path (channel pin, failover,
- * account pool, idle watchdog) runs in this plugin process as a local
- * OpenAI-compatible gateway, and `manifest.json` declares a provider that points
- * at it - `http://127.0.0.1:41593/v1`.
+ * The harness seam it used to own (an LLM provider route) does not exist here:
+ * a PI-Desktop plugin can only *declare* a provider, and the host sends the
+ * requests itself. So the ported request path (channel pin, failover, account
+ * pool, idle watchdog) runs in this plugin process as a local OpenAI-compatible
+ * gateway on `http://127.0.0.1:41593/v1`.
+ *
+ * The plugin deliberately declares **no** provider. A plugin-owned row can never
+ * be edited in Settings, and the host drops `availableForSubagents` while syncing
+ * it - so its models can never be offered to a subagent. Instead the panel
+ * generates a config that the user imports through 模型配置 →「从其他工具导入」,
+ * which creates a provider of their own pointing at this gateway.
  *
  * The plugin therefore does three things:
  *   1. keeps that gateway listening for as long as the plugin is loaded,
  *   2. exposes the DSH management surface as `cline_pass_*` agent tools,
  *   3. serves the panel, which drives the same operations by hand.
  *
- * Permissions: `provider.register` (the declared provider), `background.service`
- * (the gateway must outlive any panel), `agent.tool.register` (the tools),
- * `ui.panel` (the panel), `notify` (startup failures), `models.list` (ask the
- * host what it really has for this provider, which is the only way the panel can
- * tell that a stale provider row dropped every model from the picker).
+ * Permissions: `background.service` (the gateway must outlive any panel),
+ * `agent.tool.register` (the tools), `ui.panel` (the panel), `notify` (startup
+ * failures), `models.list` (ask the host which of these models it can actually
+ * see), and `fs.read` + `fs.write` (the panel's 写入文件 action: `fs.read` is what
+ * `pi.fs.requestDirectory()` asserts, and `fs.write.root: "userSelected"` means
+ * the only reachable directory is one the user picks, where this plugin writes
+ * exactly one file - `models.json`).
  *
  * @module cline-pass
  */
 'use strict'
 
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { BUILD_TAG } = require('./src/protocol.js')
 const { createConfig } = require('./src/config.js')
 const { createGateway } = require('./src/gateway.js')
+const { importConfigPayload, describeImportConfig, IMPORT_PROVIDER_ID } = require('./src/models.js')
 
 const COMMAND_ID = 'cline-pass.open'
 const SERVICE_ID = 'gateway'
@@ -58,6 +66,13 @@ let configStore = null
 let startError = ''
 let instanceId = ''
 let log = () => {}
+/**
+ * The directory the user picked with `pi.fs.requestDirectory()`, remembered for
+ * this process only - the host's handle is memory-only and dies with the plugin
+ * process. `writeConfig` asks once and reuses it, so a second click does not
+ * reopen the system dialog.
+ */
+let userRoot = ''
 
 /**
  * A logger for the plugin's own file, because a PI-Desktop plugin has no host
@@ -128,21 +143,22 @@ function failure(error) {
 const MODELS_PERMISSION = 'models.list'
 
 /**
- * What the *host* has for this provider - not what this plugin declared.
+ * What the *host* has for the provider the user imported - not what this plugin
+ * generated.
  *
- * A PI-Desktop plugin can only *declare* a provider: the host owns the row in
- * `pi.sqlite` and its model picker reads that row. When the row goes stale (the
- * case that prompted this: a plugin-owned provider with `auth_kind='api_key'`
- * and no secret) every model of this provider silently disappears from the
- * picker while the gateway keeps answering and the panel's own model list still
- * looks perfect. `pi.models.list()` is the only in-contract signal: the host
- * returns the models of the providers it considers enabled *and* ready, so zero
- * hits means "not in the picker" - never which of the two it is.
+ * This plugin no longer declares a model: the user imports the config the panel
+ * generates, and the host owns that row. So "is this model in the picker?" is a
+ * question only the host can answer - a row that lost its secret, or a provider
+ * the user disabled, makes every model of it disappear from the picker while the
+ * gateway keeps answering and the panel's own model list still looks perfect.
+ * `pi.models.list()` is the only in-contract signal: the host returns the models
+ * of the providers it considers enabled *and* ready, so zero hits means "not in
+ * the picker" - never which of the two it is.
  *
  * Never throws: the caller is a panel call, and an unhandled rejection would end
  * the call with nothing to show the user.
  *
- * @param modelIds - the model ids this plugin declares (`manifest.json`).
+ * @param modelIds - the model ids the generated config carries (`src/models.js`).
  * @returns A frozen `{ ok, synced, total, missing, error }`.
  */
 async function hostModelSync(modelIds) {
@@ -181,22 +197,118 @@ async function hostModelSync(modelIds) {
 }
 
 /**
- * The ids this plugin currently declares to the host.
+ * The model ids the generated config carries.
  *
- * `src/models.js` writes exactly the *registered* models into `manifest.json`,
- * which is the file the host loads, so unregistered models must not be counted
- * as "not synced". Anything unexpected yields an empty list - the panel then
- * says "0 declared" instead of inventing ids.
+ * `src/models.js` builds that config from the *registered* models, and
+ * `registered` means exactly "ticked into the JSON the user imports" - so this
+ * is what the panel asks the host about. Anything unexpected yields an empty
+ * list: the panel then says "0 models" instead of inventing ids.
  */
-function declaredModelIds(gw) {
+function generatedModelIds() {
   try {
-    const models = gw.ops.models()
+    const payload = importConfigPayload(configStore?.get?.().modelSettings ?? {})
+    const models = payload.providers?.[IMPORT_PROVIDER_ID]?.models
     if (!Array.isArray(models)) return []
-    return models
-      .filter((model) => model && model.registered !== false && typeof model.id === 'string' && model.id !== '')
-      .map((model) => model.id)
+    return models.filter((model) => typeof model?.id === 'string' && model.id !== '').map((model) => model.id)
   } catch {
     return []
+  }
+}
+
+/**
+ * The panel's 生成配置 action: the JSON, where it usually lives, and what it does.
+ *
+ * The path is only a suggestion (`%USERPROFILE%\.pi\agent\models.json`): the host
+ * reads that file - or a paste - in 模型配置 → 从其他工具导入, and a plugin has no
+ * business writing into the user's home directory on its own.
+ */
+function generatedImportConfig() {
+  const payload = importConfigPayload(configStore?.get?.().modelSettings ?? {})
+  const models = payload.providers?.[IMPORT_PROVIDER_ID]?.models ?? []
+  return {
+    ok: true,
+    path: path.join(os.homedir(), '.pi', 'agent', 'models.json'),
+    json: JSON.stringify(payload, null, 2),
+    models,
+    note:
+      models.length === 0
+        ? '当前没有勾选任何模型：先在「模型」页勾选要写进这份配置的模型，再回到这里生成。'
+        : `${describeImportConfig(payload)}。把它存到上面的路径，或直接在 PI-Desktop 的「模型配置 → 从其他工具导入」里粘贴导入；建出的 provider 归你自己，可以在设置页里改参数、勾「可供 AI 自动调度」。`,
+  }
+}
+
+/* ---------------------------- write import config ------------------------- */
+
+/**
+ * The one file name this plugin may ever write outside its own data directory:
+ * the import config the host reads. The *directory* comes from the user, never
+ * from this code, so the literal below is the whole reachable set.
+ */
+const WRITE_CONFIG_FILENAME = 'models.json'
+
+/**
+ * The panel's 写入文件 action: put the generated config where the host imports it.
+ *
+ * Reachability is `root: "userSelected"`: `pi.fs.requestDirectory()` asks the
+ * user for a directory and the handle lives in memory for this process only, so
+ * the only file this can produce is `<picked dir>/models.json`. The argument
+ * handed to `fs.writeText` is the bare literal - the SDK's signature is
+ * `writeText(pathFromRoot, content)`, resolved against the rule's root, so no
+ * directory component exists on this side at all. A cancel writes nothing,
+ * nothing is ever deleted, and no exception leaves this function: the caller is
+ * a panel call, and an unhandled rejection would end it with nothing to show the
+ * user.
+ *
+ * Note: the host gates `fs.requestDirectory` behind the `fs.read` permission
+ * (`plugin-runtime.ts`, `requestDirectory: assertPermission(loaded, "fs.read")`),
+ * so the manifest declares `fs.read` as well - with no `manifest.fs.read` rule,
+ * which grants no readable path.
+ *
+ * @returns `{ ok: true, path, bytes, models }`, or the `failure()` shape.
+ */
+async function writeImportConfig() {
+  const host = globalThis.pi
+  if (!host?.fs || typeof host.fs.requestDirectory !== 'function' || typeof host.fs.writeText !== 'function') {
+    return failure(
+      new Error(
+        '宿主没有提供 fs.requestDirectory / fs.writeText：需要在 manifest 的 permissions 里声明 "fs.read"（目录选择器需要它）与 "fs.write"，并声明 "fs": { "write": { "root": "userSelected" } }，然后重新加载插件（权限变更不会随热重载生效；旧宿主也可能没有这个 API）。',
+      ),
+    )
+  }
+  try {
+    // Generated before the picker on purpose: with nothing ticked there is
+    // nothing to write, so the user is told that instead of being asked for a
+    // directory and then refused.
+    const generated = generatedImportConfig()
+    if (generated.models.length === 0) {
+      return {
+        ok: false,
+        error: `没有勾选任何模型，不覆盖已有的 ${WRITE_CONFIG_FILENAME}。先在「模型」页勾选要写进这份配置的模型，再点「写入文件」。`,
+        code: '',
+      }
+    }
+    if (!userRoot) {
+      const picked = await host.fs.requestDirectory()
+      const chosen = typeof picked?.path === 'string' ? picked.path.trim() : ''
+      if (chosen === '') {
+        return { ok: false, error: '没有选择目录（已取消）。再点一次「写入文件」，选择 ~/.pi/agent 目录。', code: '' }
+      }
+      userRoot = chosen
+      log('import config directory chosen', { dir: userRoot })
+    }
+    // The path the user is told about, and the only path this can be.
+    const target = path.join(userRoot, WRITE_CONFIG_FILENAME)
+    // Defence in depth: should a later edit ever change what goes into
+    // `path.join`, this refuses to write anything but `models.json`.
+    if (path.basename(target) !== WRITE_CONFIG_FILENAME) {
+      return failure(new Error(`拒绝写入：目标文件名不是 ${WRITE_CONFIG_FILENAME}（${path.basename(target)}）。`))
+    }
+    const bytes = Buffer.byteLength(generated.json, 'utf8')
+    await host.fs.writeText(WRITE_CONFIG_FILENAME, generated.json)
+    log('import config written', { path: target, bytes, models: generated.models.length })
+    return { ok: true, path: target, bytes, models: generated.models.length }
+  } catch (error) {
+    return failure(error)
   }
 }
 
@@ -479,6 +591,8 @@ const PANEL_ACTIONS = [
   'reloadConfig',
   'restartGateway',
   'setModel',
+  'generateConfig',
+  'writeConfig',
   'usage',
   'usageClear',
   'quota',
@@ -502,14 +616,18 @@ function budgetError(error) {
 
 async function onPanelInvoke(channel, payload) {
   if (channel !== PANEL_CHANNEL) throw new Error(`unsupported panel channel: ${channel}`)
-  const gw = liveGateway()
   const input = payload && typeof payload === 'object' ? payload : {}
-  switch (String(input.action ?? '')) {
+  const action = String(input.action ?? '')
+  // `writeConfig` touches no gateway state: it writes the generated config into
+  // a directory the user picks, so it must answer even when the gateway is down.
+  const gw = action === 'writeConfig' ? null : liveGateway()
+  switch (action) {
     case 'status':
-      // `host` is what the host really has for this provider, not what this
-      // plugin declared: a provider row the picker dropped (stale auth, or a
-      // host that never refreshed the manifest) is invisible from in here.
-      return { ok: true, status: { ...gw.ops.status(input.apiKey ?? ''), startError }, host: await hostModelSync(declaredModelIds(gw)) }
+      // `host` is what the host really has for the provider the *user* imported,
+      // not what this plugin generated: a row the picker dropped (lost secret,
+      // provider disabled) is invisible from in here. Matching is by model id,
+      // so the user's own provider matches the ids this config carries.
+      return { ok: true, status: { ...gw.ops.status(input.apiKey ?? ''), startError }, host: await hostModelSync(generatedModelIds()) }
     case 'probe':
       return { ok: true, result: await gw.ops.probe(budgeted(input, PANEL_BUDGET_MS)) }
     case 'validate':
@@ -542,6 +660,10 @@ async function onPanelInvoke(channel, payload) {
       await ensureGateway()
       return { ok: true, status: { ...gw.ops.status(input.apiKey ?? ''), startError } }
     }
+    case 'generateConfig':
+      return generatedImportConfig()
+    case 'writeConfig':
+      return await writeImportConfig()
     default:
       throw new Error(`unsupported panel action: ${String(input.action ?? '')}`)
   }

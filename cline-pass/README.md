@@ -8,12 +8,13 @@
 | --- | --- |
 | **这是什么** | 本地网关 `127.0.0.1:41593` + 账号池与轮转/冷却 + 通道枚举与校验 + pin / exclude + failover + 流式空闲超时 + 思考档位映射 |
 | **怎么看** | 面板五页：账号池 / 模型与通道 / 请求历史 / 用量 / 设置 · 官方额度窗口（5 小时 / 本周 / 本月）· 10 个 `cline_pass_*` agent 工具 |
-| **接哪里** | Cline Pass（`api.cline.bot`）· 声明式 `contributes.providers` → 本机网关 |
+| **接哪里** | Cline Pass（`api.cline.bot`）· 面板生成的配置 → 你自己的 provider → 本机网关 |
 
 ---
 
 PI-Desktop 的插件只能**声明式**注册 provider（`contributes.providers`），请求由宿主自己发出——插件拿不到请求路径。
-所以这里保留 DSH 内核、换掉外层的接法：插件自带一个**只监听本机**的 OpenAI 兼容网关，manifest 把这个网关声明成 provider，
+所以这里保留 DSH 内核、换掉外层的接法：插件自带一个**只监听本机**的 OpenAI 兼容网关，再由面板**生成一份配置**，
+你在 设置 → 模型配置 →「从其他工具导入」里把它导入成**你自己的** provider（baseUrl 就指向这个网关）；
 宿主发的每个请求都会落进网关，网关照旧做通道枚举与校验、pin/exclude、failover、账号池与冷却、流式空闲超时、思考档位映射。
 
 ```text
@@ -27,7 +28,9 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 ### 1 · 加载
 
 插件页 → **Load development plugin** → 指向本目录（`D:\Pi\Chat\plugins\cline-pass`）。保存文件即热重载。
-本插件申请 `provider.register`、`agent.tool.register`（高危，需要你显式批准）、`background.service`、`ui.panel`、`notify`；
+本插件申请 `agent.tool.register`（高危，需要你显式批准）、`background.service`、`ui.panel`、`notify`、`models.list`，
+以及 `fs.read` + `fs.write`（面板「写入文件」用：`fs.read` 是 `pi.fs.requestDirectory()` 实际校验的那一条，`fs.write`
+被 `root: "userSelected"` 限制在**你亲手选的那个目录**，代码只写 `models.json` 一个文件名）。
 若之后改了 `permissions`，先移除再重新加载（开发插件的权限以首次批准为上限，宿主会拒绝热重载）。
 
 ### 2 · 打开面板
@@ -36,54 +39,79 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 
 ### 3 · 给 key（密钥全部由本插件管，宿主侧不用填）
 
-这个 provider 声明的是 `authKind: "none"`（**无宿主密钥**）—— 这不是随手写的：PI-Desktop 的模型选择器只列
-`enabled && (hasSecret || authKind === "none")` 的 provider，而本插件的 key 存在自己的数据目录里、宿主看不见，
-声明成 `api_key` 会让**整条 provider 从模型选择器里消失**（真机踩过，证据见下文「验证状态」）。
-
 - 面板「账号池」里加**内联账号**（key 写进插件数据目录的 `config.json`）：可以放多个，轮转 + 失败冷却。
   表里每行都有**编辑**：改账号名 / 显示名 / 换 key（**key 留空 = 不改动**）/ 停用启用。
-- 宿主对这个 provider 不再显示密钥输入框；它仍会在每个请求上带一个占位 bearer（`pi-desktop-no-auth`），
+- 宿主侧**不用填密钥**：插件**不声明任何 provider**（`contributes.providers` 已删），模型选择器里不会再出现插件那一行；
+  真正被使用的是你下一节导入出来的那个 provider —— 它在每个请求上带一个占位 bearer（`pi-desktop-no-auth`），
   插件把它当成「宿主没有 key」忽略，绝不会拿它去请求 Cline。
 - 向前兼容：若哪天宿主真的发来一把 key（非占位串），插件仍会把它当 `host` 账号在当次请求里使用，不落盘。
 - 没有「读环境变量」那种账号：宿主给插件进程的是**最小环境**（`PATH`/`TEMP`/`HOME` 一类 + `PI_PLUGIN_ID`），
   取不到你自己设的变量，所以这个来源已去掉（传 `source=env` 会被明确拒绝）。
 
-### 4 · 摸通道
+### 4 · 接进模型选择器（生成配置 → 从其他工具导入）
+
+插件**不声明任何 provider**，得把模型导入成**你自己的** provider —— 只有这种 provider 能在设置页里编辑、能勾
+「可供 AI 自动调度」（子代理能不能用它，就看这一勾）：
+
+1. 面板「模型与通道」→ **生成配置** → **写入文件**：第一次会弹系统目录选择器，选 `C:\Users\<你>\.pi\agent`
+   （目录不存在就先建一个）。插件只往这个目录写一个 `models.json`，不读、不删别的文件。
+   不想授权写盘就点「复制」，自己存成同一个路径 —— 这个路径是「从其他工具导入」会扫描的来源之一（`pi`）。
+2. 设置 → 模型配置 → **从其他工具导入** → **扫描** → 勾选「Cline Pass（本地网关）」→ **导入所选**。
+3. 导入后在那张模型卡里勾上 **「可供 AI 自动调度」**。
+4. 之后调参数直接改设置页那张卡（理由见下一节）；`models.json` 留着或删掉都行（留着下次扫描还能看到）。
+
+> [!TIP]
+> 目录选择器是模态窗口，请在 30 秒内选完（宿主对一次面板调用只等 30 秒）。万一面板提示超时，**直接再点一次「写入文件」**
+> —— 目录已经记住，这一次是秒写。插件重载后需要重新选一次目录。
+
+> [!NOTE]
+> 为什么要绕这一下：插件声明的 provider 行有两条硬限制 —— ①宿主只维护它认识的 7 个字段，`availableForSubagents`
+> 会被**丢弃**（2026-10-13 对照实验：manifest 里写上它、同时把一个宿主必看的 `maxTokens` 改成 384001，
+> 停用→启用后行确实被重写、对照值进去了，而这个字段 5 个模型**全缺**）；②插件行在设置页**没有编辑入口**。
+> 所以插件模型永远进不了委派目录 —— 这也是本插件现在**干脆不声明 provider** 的原因；而**你自己的** provider 没有这两条限制。
+
+### 5 · 摸通道
 
 面板依次点 **Probe**（判定路由管线并从路由层错误里抓该模型的完整通道列表）→ **Validate**（逐通道 pin 一遍，
 判定依据是响应自报的 `finalProvider`，不是 HTTP 200）→ 需要时 **Pin/Exclude**。
 
-### 5 · 用起来
+### 6 · 用起来
 
-模型选择里选 **provider「Cline Pass（本地网关）」**下的模型即可——注意别和自建的同名 provider 混了（见下文「注意 provider 撞名」）。
+模型选择器里选 **baseUrl 是 `http://127.0.0.1:41593/v1` 的那个 provider**（也就是上一节导入出来的那个）下的模型。
+注意别和自建的 `api.cline.bot` provider 混了 —— 它们的模型 id 可能一模一样（见下文「认准 baseUrl」）。
 
 ---
 
-## 🧩 模型注册与参数（面板可改）
+## 🧩 生成配置与生效路径
 
-宿主的插件 provider 是**插件所有**的：`providers.owner_plugin_id` 标着插件 id，设置页对这类行不给编辑入口
-（原文：\"This provider comes from the plugin …, which supplies its endpoint and models.\"），而且宿主加载插件时会用
-manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`。所以**能改参数的地方只有本插件的 manifest**，
-面板就是这个改动的入口：
+插件**不声明任何 provider**（`contributes.providers` 与 `provider.register` 权限都已删除），所以模型选择器里不会再有插件那一行。
+面板里的模型参数写进插件数据目录的 `config.json`（`modelSettings`），再由一个面板动作把它们翻译成**你要导入的那份 JSON**：
 
-- 面板「模型参数 / 注册」可改 `registered` / `contextWindow` / `maxTokens` / `supportsImages` / `thinkingLevels` / `defaultThinkingLevel`；
-  改动写进插件数据目录的 `config.json`（`modelSettings`），并**重写本插件自己的 `manifest.json`**（写前备份到数据目录 `manifest.backup.json`）。
-- 参数默认值取自 Cline 官方目录里 `cline-pass` provider 下的 14 个模型；`cline-pass/qwen3.8-max` 在官方目录里没有独立条目
-  （窗口/输出与目录的 `CLINE_PASS_MODEL_DEFAULTS` 常量逐字相同），目录与面板都标 `fallback`，默认不注册。
-- 未注册的模型**不会**出现在宿主的模型选择器里。
+- 面板「模型参数（写进生成的配置）」可改 `registered`（= 是否写进生成的配置）/ `contextWindow` / `maxTokens` /
+  `supportsImages` / `thinkingLevels` / `defaultThinkingLevel`；保存只提交改动过的字段，**不需要重载插件**。
+- 默认值取自 **models.dev**：`<安装目录>\resources\models.dev\api.json` 里 `cline-pass` provider 下的模型
+  （窗口 `limit.context`、输出上限 `limit.output`、图片 `modalities.input`、档位 `reasoning_options`）。
+  仓库里的 `tools/sync-catalog.mjs` 就是刷新这张表的脚本：默认读本机快照，`--remote` 直连 models.dev，不加 `--write` 只报告差异。
+- 生成配置里写死的 `limit` 会被宿主当成**用户值**，models.dev 补全不会覆盖它。但 **`pi` 格式没有"自定义档位阶"字段**：
+  0.20.1 的 `bindingFromPiModel` 只要看到 `reasoning: true` 就**硬编码** `thinkingLevels: ["off","low","medium","high"]` +
+  默认 `medium`（`out/main/index.js:2238` 附近），所以导入后的档位是宿主通用那套，**不是**上面表里的 models.dev 梯子。
+  要按 models.dev 的梯子来（例如 `deepseek-v4.1-flash` 应是 `off/low/high/max`），就在 设置 → 模型配置 那张模型卡里手改档位 ——
+  那里可以改（`SettingsPage` 的档位 chips 会写回 `thinkingLevels` / `defaultThinkingLevel`）。
+- 「宿主专有能力」（思考协议 / PDF / 自动调度 / 联网搜索 / 生图）插件写不进生成配置：导入之后到设置页里改，
+  其中**「可供 AI 自动调度」就是 `availableForSubagents`**。
 
 > [!IMPORTANT]
-> **生效路径（实测，别搞错）**：宿主 provider 行由宿主核心同步，**开发热重载不会刷新它**——2026-10-13 连续 4 次热重载
-> （`development.plugin.reloaded` 均为 `ok:true`）后，`pi.sqlite` 里那行仍是旧的 15 个模型（`updated_at` 停在 `06:45:11Z`）。
-> 宿主日志只在启动时打 `state: reconciled plugin provider rows count=1`；插件**安装/启用**路径会重写该行。
-> 因此要让新参数/新模型真的进模型选择器，需要在插件页把本插件**停用再启用**（或重启 PI-Desktop）。面板写入成功后会提示这一点。
+> **生效路径（实测）**：`importConfigPayload()` 从 manifest 里读回网关地址（`http://127.0.0.1:41593/v1`），
+> 生成的 JSON 固定包含：`api: "chat_completions"`、`apiKey: "pi-desktop-no-auth"`（占位串，网关忽略它、改用你自己的账号池）、
+> 每个模型一个 `limit`（窗口/输出）、`reasoning: true`、图片模型带 `input: ["text","image"]`。
+> 导入器对**已存在**的 provider（判重规则：同 baseUrl + apiStyle，或同 vendorKey + apiStyle，且密钥一致）会**跳过**，
+> 所以「生成配置 → 导入」主要用于**第一次**接上；之后调参数请直接改 设置 → 模型配置 里那张卡（它现在是你的 provider，能改）。
 
 > [!WARNING]
-> **注意 provider 撞名（实测踩过）**：宿主的模型选择器按「provider + 模型」区分，同一个模型 id 可以同时挂在多个 provider 下。
-> 2026-10-13 本机实测：6 个 provider 里有两个都提供 `cline-pass/deepseek-v4.1-flash`，用户日常会话走的是**自建的那条**
-> （`bc036988-…`，只声明了 2 个模型），插件网关侧 0 个会话、用量账本为空——也就是说 pin / failover / 账号池 / 用量
-> 这些功能看不到那部分流量。要让它们真正作用到你的请求：在模型选择器里选 provider 为「Cline Pass（本地网关）」下的模型，
-> 或者把你自建 provider 的 `baseUrl` 指到 `http://127.0.0.1:41593/v1`（后者会让本插件的网关接管那条 provider 的所有请求）。
+> **认准 baseUrl（实测踩过）**：模型选择器按「provider + 模型」区分，同一个模型 id 可以挂在多个 provider 下。
+> 2026-10-13 本机实测：`cline-pass/deepseek-v4.1-flash` 同时出现在**自建的 `api.cline.bot` provider**（`bc036988-…`）
+> 与本插件网关的 provider 下，而日常会话走的是前者 —— 于是插件网关侧 0 会话、账本为空，pin / failover / 账号池 /
+> 额度这些功能**看不到那部分流量**。想用上它们，就选 baseUrl 为 `http://127.0.0.1:41593/v1` 的那个 provider。
 
 ---
 
@@ -151,8 +179,8 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 
 ## 🔌 端口
 
-- `41593` 写在 `manifest.json` 的 `contributes.providers[0].baseUrl`；网关启动时回读 manifest（`manifestPort()`），
-  所以**改端口只改 manifest 这一处**。
+- `41593` 现在是 `src/protocol.js` 里的单一常量 `GATEWAY_PORT` / `GATEWAY_BASE_URL`（原先写在 manifest 的 provider baseUrl 里；provider 声明删掉后就挪到代码里了）；
+  所以**改端口只改这一个常量**（网关监听、生成配置里的 baseUrl、面板显示都跟着它走）。
 - 端口被占用时：插件不会静默降级——日志里 `gateway did not start`，面板顶部显示启动错误，并弹一次通知。
 - 网关只监听 `127.0.0.1`，且校验 `Host` 头：非本机来源直接 403。
 
@@ -171,8 +199,8 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 
 宿主的面板桥只转发 `skill.*` 通道，所以面板统一走 `skill.setEnabled` + `payload.action`（与官方 `pi.todo` 同形）：
 `status` `probe` `validate` `test` `pin` `clearPin` `accounts` `history` `setConfig` `reloadConfig` `restartGateway`
-`setModel`（写模型参数并重写 manifest）`usage` `usageClear` `quota`。
-`status` 除网关状态外还带 `host`（宿主清单比对结果，即「宿主侧同步状态」那一行的原始数据，见下文第 24 条）。
+`setModel`（写模型参数到插件配置，不再碰 manifest）`generateConfig`（生成要导入的 JSON，不落盘）`writeConfig`（把它写到用户选的目录里的 `models.json`）`usage` `usageClear` `quota`。
+`status` 除网关状态外还带 `host`（宿主清单比对结果，即「宿主侧同步状态」那一行的原始数据）。
 宿主对**一次面板调用**只等 30 秒（`PLUGIN_PANEL_TIMEOUT_MS`），所以面板侧的超时是 25 秒；probe/validate/test 这类
 重活给的是同一预算，超时会说清原因并建议改用 agent 工具（110 秒）。插件进程抛错时宿主可能不回传异常，面板因此自带超时与错误提示。
 
@@ -191,9 +219,11 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 | 插件进程只继承最小环境（`PATH`/`TEMP`/`HOME`/… + `PI_PLUGIN_ID`、`NODE_ENV`） | 不提供读环境变量的账号来源 |
 | onLoad 15 秒、其余 hook 5 秒；onLoad 抛错会让整个加载回滚 | 端口被占用只记录 + 弹通知，不抛错 |
 | `PluginCheck` 校验清单与打包规则，但不校验渲染期字段形态 | 另加形态守卫测试（见下） |
-| 模型选择器只列 `enabled && (hasSecret \|\| authKind === "none")` 的 provider（`SettingsPage` / `ComposerPermissionPicker` 的 `be()`） | provider 声明 `authKind: "none"`：key 全在插件自己的 `config.json` 里，声明 `api_key` 会让整条 provider 从选择器消失 |
-| 插件模型的 manifest 字段只有 7 个会被 host-core 落库：`id` / `name`(→`alias`) / `contextWindow` / `maxTokens` / `supportsImages` / `thinkingLevels` / `defaultThinkingLevel` | 面板模型卡只给这 7 个开关；`thinkingProtocol` / `supportsDocuments` / `availableForSubagents` / `nativeWebSearch` / 来源标记 / 生图这些宿主专有字段只作只读说明，不给假开关 |
-| 插件 provider 行只在宿主启动 / 插件安装 / 启用时写一次（host-core 的 `providers.rs`），开发热重载**不**刷新 | 面板写明「改完注册范围请把本插件停用再启用」，不假装保存即生效 |
+| 模型选择器只列 `enabled && (hasSecret \|\| authKind === "none")` 的 provider；空 `models` 只在 `(authKind ?? "api_key") === "api_key"` 且有 `baseUrl` 时才合法 | 插件**不声明 provider**（这两条约束都不再适用）；用户导入的 provider 带占位 bearer `pi-desktop-no-auth`，网关忽略它、改用自己的账号池 |
+| `fs.write` 是高危权限；`fs.write.root: "userSelected"` 时 scope 由用户选目录决定，句柄只活在插件进程内；`pi.fs.requestDirectory()` 断言的是 **`fs.read`** 权限 | manifest 同时声明 `fs.read`（**不给任何 `fs.read` 规则**，不放开可读路径）与 `fs.write`；代码只写一个字面量文件名 `models.json`，不读不删其它文件 |
+| 插件模型的 manifest 字段只有 7 个会被 host-core 落库：`id` / `name`(→`alias`) / `contextWindow` / `maxTokens` / `supportsImages` / `thinkingLevels` / `defaultThinkingLevel` | 面板只给这 7 个开关；`thinkingProtocol` / `supportsDocuments` / `availableForSubagents` / `nativeWebSearch` / 来源标记 / 生图这些宿主专有字段写不进生成配置，导入之后到设置页那张卡里改 |
+| 插件 provider 行只在宿主启动 / 安装 / 启用时同步一次，开发热重载**不**刷新 | 插件现在**不声明 provider**，参数改动走生成配置、**不需要重载**；只有增删声明本身才与宿主交互一次 |
+| 委派（子代理）目录只收 `binding.availableForSubagents === true` 的模型（`if (!binding.availableForSubagents) continue;`），而插件 provider 拿不到这个字段 | 这正是本插件改成「生成配置 → 从其他工具导入」的原因：只有**你自己的** provider 能在设置页勾上它 |
 | `pi.models.list()` 需要 `models.list` 权限；**扩大 `permissions` 不会随热重载生效**，宿主必须显式重新加载（开发说明原话：热重载不会授予你没批准过的权限） | 面板的「宿主侧同步状态」行靠它；未授予时降级成灰字说明，不假装成功 |
 
 ---
@@ -295,6 +325,32 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
     这三条**与复选框无关**的规则被一起删掉了（额度翻页行和模型卡的别名/数值输入都靠它们），已原样恢复；
     判据是**行集合比对**而不是 `git diff` —— 后者会把新插入块前后的一行标成 delete+add 的配对假象，只看 diff 会误判。
     脚本块除新增的 `renderHostSync` 外逐字节未变，用**规范化行尾后**的哈希核对（`git show` 给 LF、工作树是 CRLF，直接比会假报不一致）。
+26. **变体 ①：插件不再自动注册模型（用户拍板）**：两条硬限制逼出来的（见上文第 4 步 NOTE）——插件 provider 拿不到
+    `availableForSubagents`，也无法在设置页编辑。改法：`contributes.providers[0].models` 置空（空 `models` 只在
+    `(authKind ?? "api_key") === "api_key"` 且有 `baseUrl` 时合法，所以同时删掉 `authKind: "none"`）；面板新增 `generateConfig`
+    动作产出要导入的 JSON（`api: "chat_completions"`、`apiKey: "pi-desktop-no-auth"`、每模型一个 `limit`）；`setModel` 只写
+    `config.json`、**不再重写 manifest**，因此改参数不再需要重载插件；`registered` 的语义变成"写进生成的配置"。
+27. **数值来源换成 models.dev（用户拍板）**：`src/catalog.js` 的 14 条按 PI-Desktop 自带的 `resources/models.dev/api.json` 重算
+    （窗口 `limit.context` / 输出 `limit.output` / 图片 `modalities.input` / 档位 `reasoning_options`，`none` 折进宿主的 `off`），13 条变化 ——
+    例如 `deepseek-v4.1-flash` 输出上限 943718 → **384000**、`glm-5.3` 与 `kimi-k3` → **131072**、`deepseek-v4-pro` 档位
+    `high/xhigh` → **`high/max`**；`qwen3.8-max` 原来被标"兜底默认值"，models.dev 里其实有它 → 标记去掉。
+    刷新脚本 `tools/sync-catalog.mjs`（默认读本机快照，`--remote` 走网络，`--write` 才落盘，幂等）。落地时踩过一次自己写的坑：
+    合并时 `...rest` 把 current 的派生字段又铺回去，报告"1 处变化"却写回旧值 —— 已修。
+28. **面板补齐（前端由 Kimi K3 实现，我复核并补文案）**：新增「生成配置（导入到模型配置）」卡片（按钮 / 只读 JSON / 复制 / 四步说明）；
+    模型卡与「宿主侧同步状态」行全面改文案（旧措辞会骗人：`注册进宿主模型选择器` → `写进生成的配置`；宿主同步行改成「已导入 N/M」）；
+    保存模型后的提示也从"manifest 已写入"改成"重新生成配置再导入"。新增断言器 `test/render-import-config.cjs`（现 36 条）。
+29. **「写入文件」：插件唯一的写盘动作（用户要求"只允许写这一条路径"）**：用宿主的 `root: "userSelected"` 机制 ——
+    第一次点会弹系统目录选择器（选 `~/.pi/agent`），句柄**只活在插件进程内**；`pi.fs.requestDirectory()` 实际校验的是
+    **`fs.read`** 权限（在已装宿主包里核实过），所以 manifest 同时声明 `fs.read`（**不给任何 `fs.read` 规则**，不放开任何可读路径）
+    与 `fs.write`；`pi.fs.writeText(pathFromRoot, …)` 收的是**相对 root 的路径**，代码因此只传字面量 `models.json`。
+    取消选择器 → 一个文件都不写；进程内记住目录，第二次是秒写；**0 个模型时直接拒绝**（不用空清单覆盖用户已有的文件）。
+    面板上还有一句提示：选择器是模态窗口、请在 30 秒内选完，超时就再点一次（秒写）。测试从 71 条加到 **75 条**。
+30. **干脆不声明 provider（用户："第一个这个可以不要喽"）**：`contributes.providers` 与 `provider.register` 权限一起删除；
+    端口/地址从 manifest 挪到 `src/protocol.js` 的单一常量（`GATEWAY_PORT` / `GATEWAY_BASE_URL`），
+    `manifestPort()` 与 `providerBaseUrl()` 一并删除，`src/` 里再没有任何地方读 `contributes.providers`。
+    宿主会在下一次同步（停用→启用/重启）删掉那行（对账逻辑会枚举 `owner_plugin_id` 的行）。
+    另外查明并写进上一节：`pi` 导入格式**硬编码**思考档位（`reasoning: true` → `off/low/medium/high`），
+    所以 models.dev 的梯子只能在设置页里手改 —— 这不是"没对齐"，是导入格式的限制。
 
 ---
 
@@ -302,19 +358,20 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 
 ```powershell
 cd D:\Pi\Chat\plugins\cline-pass
-node --test test/gateway.test.mjs      # Windows 下必须给文件路径；53 项
+node --test test/gateway.test.mjs      # Windows 下必须给文件路径；54 项
 node test/render-quota.cjs             # 面板额度卡片：63 条断言，不需要浏览器
 node test/render-model-card.cjs        # 面板模型参数卡：60 条断言（含「默认档位点不开」回归）
-node test/panel-wiring.cjs             # 面板接线：脚本要的 id/class 是否都还在
+node test/render-import-config.cjs     # 面板「生成配置」卡片：36 条断言（生成 / 复制 / 写入文件）
 node test/render-host-sync.cjs         # 面板宿主同步行：25 条断言（六种状态）
-node test/host-sync.cjs                # 宿主清单比对（pi.models.list 桩）：33 条断言
+node test/host-sync.cjs                # 宿主清单比对 + 写入文件（pi.models.list / pi.fs 桩）：75 条断言
+node test/panel-wiring.cjs             # 面板接线：脚本要的 id/class 是否都还在
 ```
 
 覆盖：manifest↔代码一致性（工具 / 面板动作逐项对齐）、**清单形态守卫（`{en, zh-CN}` 只允许出现在宿主会解析 i18n 的位置）**、
 **面板/工具预算不越宿主上限**、pin 两种拼装的写入与解析、模型清单与外机 403、流式 SSE、非流式 JSON、
 跨账号 failover 与冷却落点、pin 注入上游、思考档位映射与**按模型收敛**、无可用账号时的 502、probe 抓通道、validate 逐通道、
 test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
-**注册表（默认 5 个注册 / 覆盖生效与越界丢弃 / manifest 写入与备份 / 坏 manifest 不抛）**、
+**生成配置（默认 5 个进配置 / 覆盖生效与越界丢弃 / 形状守卫 / 只含勾选模型 / 不碰 manifest / `apiKey` 是占位串）**、
 **用量账本（窗口过滤、按模型·通道·天分组、坏行容错、清空、`extractUsage` 的多种成本拼写）**、
 **官方额度（按账号读取与 60 秒缓存、`refresh` 绕过、401/500 当数据返回、空窗口列表不是错误、缺百分比保持未知）**、
 **接线冒烟（临时网关 start → `/v1/models` → `state` → `usage` → 真实请求落账 → stop，用来抓漏 require 这类只在运行期暴露的错）**。
@@ -374,6 +431,18 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
   **旧实例没有被拆掉**：`http://127.0.0.1:41593/v1/models` 仍然 `HTTP 200`（14 个目录模型），也就是这段等待期里网关照常服务、
   只是新代码尚未生效；在插件页重新加载一次即可全部生效。对照证据：另一个插件 `cn.star.skill-learning` 的
   `plugin.api models.list ok:true count:63` 说明这个权限名与 `pi.models.list()` 在真机上是通的。
+- 本轮新增（变体 ①，2026-10-13 深夜）：插件**不再声明任何 provider**（`contributes.providers` 与 `provider.register` 权限都删了），模型参数只写插件配置；面板新增「生成配置 / 写入文件」，导出给 PI-Desktop「从其他工具导入」用 —— 原因与实测证据见上文第 4 步的 NOTE。
+  离线验证：`node --test test/gateway.test.mjs` **54/54**、`node test/host-sync.cjs` 75、`node test/render-import-config.cjs` 36、
+  `node test/render-host-sync.cjs` 25、`node test/render-model-card.cjs` 60、`node test/render-quota.cjs` 63、`node test/panel-wiring.cjs` OK；
+  `node --check` 全部 JS 与测试脚本 0 失败；`PluginCheck` 通过（22 文件；warning 列 `agent.tool.register` 与 `fs.write`）。
+  **真机进度（2026-10-13 深夜复核，只读核对宿主库）**：用户已按流程导入成功 —— 他自己的 provider
+  `59f36d16-…`（`base_url = http://127.0.0.1:41593/v1`、`api_style = chat_completions`、
+  `auth_kind = api_key_and_base_url`、5 个模型）；重载后**插件那一行已从宿主库里消失**（`providers` 表里再无 `owner_plugin_id` 非空的行）
+  —— 删掉 `contributes.providers` 之后宿主确实回收了旧行，选择器里不会再出现插件那一行。
+  委派目录（`<vendor_key>/<modelId>`）里已出现 `custom/cline-pass/minimax-m3`（勾了「可供 AI 自动调度」1/5）。
+  待实测：其余 4 个模型的勾选、面板「写入文件」按钮（`~/.pi/agent/models.json` 目前还是手工写的那份，mtime 未变）、
+  以及那 4 个模型的手改档位（宿主对 `reasoning: true` 硬编码 `off/low/medium/high`，导入格式不带档位阶）。
+- 本轮新增（数值来源换成 models.dev）：`src/catalog.js` 14 条按 models.dev 重算（13 条变化），刷新脚本 `tools/sync-catalog.mjs`，幂等复跑 0 变化。
 
 ---
 
