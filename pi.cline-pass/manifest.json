@@ -1,0 +1,437 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.duya07.cline-pass",
+  "name": "Cline Pass 本地网关",
+  "version": "1.0.0",
+  "description": "把 DSH 的 dsh-cline-pass 移植到 PI-Desktop：声明一个指向本机网关的 provider，并在网关里实现上游通道枚举与校验、按通道 pin/exclude 与 failover、账号池与冷却、流式空闲超时、思考档位映射，另附管理面板与 cline_pass_* agent 工具。",
+  "i18n": {
+    "en": {
+      "name": "Cline Pass Local Gateway",
+      "description": "Port of the DSH plugin dsh-cline-pass: a declared provider that points at a local gateway, which owns upstream channel discovery and validation, per-channel pin/exclude with failover, the account pool with cooldowns, stream idle timeouts and thinking-level translation - plus a management panel and cline_pass_* agent tools.",
+      "safetyNotes": "The plugin listens on 127.0.0.1 only and accepts requests from this machine. Credentials live in the plugin's data directory (config.json, written 0600 where the platform honours it); the key typed into the model settings page is used in memory for the request that carried it and is never copied to disk. Upstream traffic goes to the Cline Pass endpoint configured in the panel (default https://api.cline.bot/api/v1)."
+    },
+    "zh-CN": {
+      "name": "Cline Pass 本地网关",
+      "description": "DSH 插件 dsh-cline-pass 的 PI-Desktop 移植：声明一个指向本机网关的 provider，网关内实现上游通道枚举与校验、按通道 pin/exclude 与 failover、账号池与冷却、流式空闲超时、思考档位映射，并附带管理面板与 cline_pass_* 工具。",
+      "safetyNotes": "网关只监听 127.0.0.1，仅接受本机请求。凭据存放在插件数据目录的 config.json（在支持的平台上写入 0600 权限）；模型设置页里填的 key 只在当次请求的内存中使用，不会写入磁盘。上游流量只发往面板中配置的 Cline Pass 端点（默认 https://api.cline.bot/api/v1）。"
+    }
+  },
+  "author": "duya07",
+  "categories": [
+    "integrations"
+  ],
+  "main": "main.js",
+  "ui": {
+    "panel": "renderer/index.html",
+    "title": {
+      "en": "Cline Pass gateway",
+      "zh-CN": "Cline Pass 网关"
+    },
+    "width": 1080,
+    "height": 780
+  },
+  "contributes": {
+    "providers": [
+      {
+        "id": "cline-pass",
+        "name": "Cline Pass（本地网关）",
+        "category": "Cline Pass",
+        "description": "经由本插件本地网关的 Cline Pass 订阅模型：通道 pin 与 failover、账号池、思考档位映射。",
+        "baseUrl": "http://127.0.0.1:41593/v1",
+        "apiStyle": "chat_completions",
+        "authKind": "api_key",
+        "models": [
+          {
+            "id": "cline-pass/deepseek-v4.1-flash",
+            "name": "DeepSeek V4.1 Flash",
+            "contextWindow": 1048576,
+            "maxTokens": 943718,
+            "supportsImages": true,
+            "thinkingLevels": [
+              "off",
+              "low",
+              "high",
+              "max"
+            ],
+            "defaultThinkingLevel": "low"
+          },
+          {
+            "id": "cline-pass/deepseek-v4-pro",
+            "name": "DeepSeek V4 Pro",
+            "contextWindow": 1048576,
+            "maxTokens": 384000,
+            "supportsImages": false,
+            "thinkingLevels": [
+              "off",
+              "high",
+              "xhigh"
+            ],
+            "defaultThinkingLevel": "high"
+          },
+          {
+            "id": "cline-pass/glm-5.3",
+            "name": "GLM-5.3",
+            "contextWindow": 1048576,
+            "maxTokens": 943718,
+            "supportsImages": false,
+            "thinkingLevels": [
+              "off",
+              "low",
+              "high",
+              "max"
+            ],
+            "defaultThinkingLevel": "low"
+          },
+          {
+            "id": "cline-pass/kimi-k3",
+            "name": "Kimi K3",
+            "contextWindow": 1048576,
+            "maxTokens": 943718,
+            "supportsImages": true,
+            "thinkingLevels": [
+              "off",
+              "low",
+              "high",
+              "max"
+            ],
+            "defaultThinkingLevel": "low"
+          },
+          {
+            "id": "cline-pass/minimax-m3",
+            "name": "MiniMax-M3",
+            "contextWindow": 1048576,
+            "maxTokens": 512000,
+            "supportsImages": true,
+            "thinkingLevels": [
+              "off"
+            ],
+            "defaultThinkingLevel": "off"
+          }
+        ]
+      }
+    ],
+    "services": [
+      {
+        "id": "gateway",
+        "label": "Cline Pass 本地网关"
+      }
+    ],
+    "commands": [
+      {
+        "id": "cline-pass.open",
+        "title": "Cline Pass：打开管理面板",
+        "keywords": [
+          "cline",
+          "cline-pass",
+          "订阅",
+          "通道",
+          "pin",
+          "cline_pass",
+          "网关"
+        ],
+        "category": "Integrations"
+      }
+    ],
+    "agentTools": [
+      {
+        "name": "cline_pass_status",
+        "description": "Cline Pass 本地网关状态：端口、上游 baseUrl、账号池（含冷却与掩码后的 key 提示）、每个模型的 pin 与已探测通道、并发与超时设置。只读。",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "cline_pass_models",
+        "description": "列出 Cline Pass 订阅模型及上下文窗口、输出上限、思考档位与图片能力，并附带已探测通道、pin 与最近被哪个通道服务。只读。",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "只看某个模型（可选，模糊匹配）"
+            }
+          }
+        }
+      },
+      {
+        "name": "cline_pass_probe",
+        "description": "探测一个模型：判断路由管线（direct / planner）、本次被哪个上游通道服务，并从路由层错误里抓取该模型可用的完整通道列表。结果会缓存供 pin/exclude 使用。",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "模型 id，例如 cline-pass/deepseek-v4.1-flash"
+            },
+            "apiKey": {
+              "type": "string",
+              "description": "可选：本次探测使用的 Cline API Key（不落盘）"
+            }
+          },
+          "required": [
+            "model"
+          ]
+        }
+      },
+      {
+        "name": "cline_pass_validate",
+        "description": "逐个把已发现的通道 pin 一遍并记录可用性。判定依据是响应自报的 finalProvider 是否等于被 pin 的通道，而不是 HTTP 200。需要先 probe。",
+        "risk": "medium",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "模型 id"
+            },
+            "apiKey": {
+              "type": "string",
+              "description": "可选：本次校验使用的 Cline API Key（不落盘）"
+            }
+          },
+          "required": [
+            "model"
+          ]
+        }
+      },
+      {
+        "name": "cline_pass_test",
+        "description": "按给定的 pin/exclude 配置真实发一次请求，返回每个候选通道的尝试轨迹（状态码、耗时、是否被采纳）。不修改配置。",
+        "risk": "medium",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "模型 id"
+            },
+            "upstreams": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "按顺序尝试的通道"
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "排除的通道"
+            },
+            "pinMode": {
+              "type": "string",
+              "enum": [
+                "strict",
+                "preferred"
+              ]
+            },
+            "sort": {
+              "type": "string",
+              "enum": [
+                "cost",
+                "ttft",
+                "tps",
+                "none"
+              ]
+            },
+            "apiKey": {
+              "type": "string",
+              "description": "可选：本次测试使用的 Cline API Key（不落盘）"
+            }
+          },
+          "required": [
+            "model"
+          ]
+        }
+      },
+      {
+        "name": "cline_pass_pin",
+        "description": "写入或清除某个模型的通道 pin：upstreams（按顺序的 failover 链）、exclude（编译成 allow-list）、pinMode（strict/preferred）、sort。写操作，立即生效；clear=true 清除。",
+        "risk": "medium",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "模型 id"
+            },
+            "upstreams": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "按顺序尝试的通道"
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "要排除的通道"
+            },
+            "pinMode": {
+              "type": "string",
+              "enum": [
+                "strict",
+                "preferred"
+              ]
+            },
+            "sort": {
+              "type": "string",
+              "enum": [
+                "cost",
+                "ttft",
+                "tps",
+                "none"
+              ]
+            },
+            "clear": {
+              "type": "boolean",
+              "description": "true 时清除该模型的 pin"
+            }
+          },
+          "required": [
+            "model"
+          ]
+        }
+      },
+      {
+        "name": "cline_pass_accounts",
+        "description": "管理 Cline Pass 账号池：list/add/update/remove/mode/test/resetCooldowns。密钥只写在插件数据目录的 config.json 里；宿主给插件进程的是最小环境，读不到你自己的环境变量，所以没有 env 账号。",
+        "risk": "medium",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "list",
+                "add",
+                "update",
+                "remove",
+                "mode",
+                "test",
+                "resetCooldowns"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "description": "账号名"
+            },
+            "renameTo": {
+              "type": "string",
+              "description": "update 时改账号名（留空或与原名相同 = 不改）"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "inline"
+              ]
+            },
+            "key": {
+              "type": "string",
+              "description": "inline 账号的 Cline API Key"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "accountMode": {
+              "type": "string",
+              "enum": [
+                "single",
+                "roundrobin"
+              ]
+            },
+            "activeAccount": {
+              "type": "string",
+              "description": "single 模式下固定使用的账号名"
+            },
+            "model": {
+              "type": "string",
+              "description": "test 时使用的模型（可选）"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
+        "name": "cline_pass_history",
+        "description": "读取最近的 Cline Pass 请求记录：模型、命中的通道、账号、状态、耗时、token 与备注。只读。",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "number",
+              "description": "返回条数（默认 50）"
+            },
+            "model": {
+              "type": "string",
+              "description": "按模型子串过滤（可选）"
+            }
+          }
+        }
+      },
+      {
+        "name": "cline_pass_usage",
+        "description": "Cline Pass 用量账本：按时间窗汇总请求数、失败数、输入/输出 token 与上游给出的成本（按模型、按通道、按账号、按天分组），并附最近 N 条明细。数据来自每次请求最终帧的 usage，存在插件数据目录的 usage.jsonl。只读。",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "days": {
+              "type": "number",
+              "description": "统计窗口天数，0 表示全部（默认 7）"
+            },
+            "limit": {
+              "type": "number",
+              "description": "附带的最近明细条数（默认 20）"
+            },
+            "model": {
+              "type": "string",
+              "description": "只看某个模型（可选，模糊匹配）"
+            }
+          }
+        }
+      },
+      {
+        "name": "cline_pass_quota",
+        "description": "Cline 官方额度（订阅配额）：按账号读 Cline 自己的 /users/me/plan/usage-limits，给出 5 小时 / 每周 / 每月窗口的已用与剩余百分比、三档语气与重置倒计时。只读、不消耗 token。与本地用量账本（cline_pass_usage）不同：账本只统计经过本网关的请求，官方窗口统计该账号在任何地方的消耗；host 账号的 key 只在请求内存里，读不到时会明确说明原因。",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "refresh": {
+              "type": "boolean",
+              "description": "true 时绕过 60 秒缓存强制重读"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "permissions": [
+    "provider.register",
+    "background.service",
+    "agent.tool.register",
+    "ui.panel",
+    "notify"
+  ],
+  "engines": {
+    "piDesktop": ">=0.1.0"
+  },
+  "activationEvents": [
+    "onStartup",
+    "onCommand:cline-pass.open"
+  ]
+}

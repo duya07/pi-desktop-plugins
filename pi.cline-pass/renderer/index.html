@@ -1,0 +1,1908 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      PI-Desktop owns a 46px drag band; the page opts into the v2 chrome contract
+      and reserves the band with var(--pi-plugin-titlebar-height, 46px).
+    -->
+    <meta name="pi-plugin-chrome" content="v2" />
+    <title>Cline Pass 网关</title>
+    <script>
+      // Appearance pre-paint: replay the last known palette before any CSS runs,
+      // so the first painted frame is already in the host's theme.
+      (function () {
+        var KEY = "piclinepass.appearance.v1";
+        var root = document.documentElement;
+        function prefersLight() {
+          try { return window.matchMedia("(prefers-color-scheme: light)").matches; } catch (e) { return true; }
+        }
+        function resolveBase(base) {
+          if (base === "light" || base === "dark") return base;
+          return prefersLight() ? "light" : "dark";
+        }
+        var cached = null;
+        try { cached = JSON.parse(window.localStorage.getItem(KEY) || "null"); } catch (e) { cached = null; }
+        root.dataset.theme = resolveBase(cached && cached.base);
+        window.__picp = { cacheKey: KEY, resolveBase: resolveBase };
+      })();
+    </script>
+    <style>
+      :root {
+        --bg: #f4f6f8;
+        --card: #ffffff;
+        --ink: #2c3540;
+        --ink-soft: #6b7885;
+        --line: #e3e8ee;
+        --accent: #3f7dbe;
+        --accent-soft: #eaf2fb;
+        --ok: #2f9e6b;
+        --warn: #c98a12;
+        --bad: #cf5a4c;
+        --mono: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+        --radius: 12px;
+        --radius-sm: 8px;
+        --shadow: 0 1px 2px rgba(16, 24, 32, 0.06), 0 4px 12px rgba(16, 24, 32, 0.04);
+      }
+      [data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #16191d;
+        --card: #1e2329;
+        --ink: #dfe5ec;
+        --ink-soft: #93a0ad;
+        --line: #2b323a;
+        --accent: #6fa8e0;
+        --accent-soft: #22303d;
+        --ok: #57c08b;
+        --warn: #e0b25a;
+        --bad: #e88376;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      html { scrollbar-gutter: stable; }
+      body {
+        margin: 0;
+        padding: var(--pi-plugin-titlebar-height, 46px) 0 0;
+        font: 13px/1.6 "PingFang SC", "Microsoft YaHei", -apple-system, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      /* focus: visible ring only, no sticky outline on mouse */
+      :where(a, button, input, select, textarea, summary):focus { outline: none; }
+      :where(a, button, input, select, textarea, summary):focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      .wrap { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+      .bar {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 14px; background: var(--card);
+        border-bottom: 1px solid var(--line); flex-wrap: wrap;
+        min-height: 44px;
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: inline-block; flex: none; box-shadow: 0 0 0 4px color-mix(in srgb, var(--bad) 18%, transparent); transition: background-color 160ms ease, box-shadow 160ms ease; }
+      .dot.on { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 18%, transparent); }
+      .bar b { font-weight: 600; letter-spacing: -0.01em; line-height: 1.35; }
+      .bar .hint { overflow-wrap: anywhere; }
+      .spacer { flex: 1; min-width: 12px; }
+      .tabs {
+        display: flex; gap: 4px; padding: 10px 14px 0;
+        background: var(--bg); border-bottom: 1px solid var(--line);
+        overflow-x: auto; scrollbar-width: thin; flex-wrap: nowrap;
+      }
+      .tabs button {
+        border: 1px solid var(--line); border-bottom-color: var(--line);
+        background: var(--card); color: var(--ink-soft);
+        border-radius: 8px 8px 0 0; padding: 7px 14px;
+        cursor: pointer; font: inherit; font-size: 12.5px;
+        white-space: nowrap; flex: none;
+        transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease, filter 120ms ease;
+      }
+      .tabs button:hover { background: var(--accent-soft); color: var(--ink); border-color: var(--line); }
+      .tabs button:active { filter: brightness(0.97); }
+      .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--card); background: var(--card); font-weight: 600; box-shadow: 0 -1px 0 var(--card) inset; }
+      .tabs button[aria-selected="true"]:hover { background: var(--card); }
+      main { flex: 1; min-height: 0; overflow: auto; padding: 14px 14px 20px; display: flex; flex-direction: column; gap: 12px; background: var(--bg); }
+      main > section { display: flex; flex-direction: column; gap: 12px; }
+      section[hidden] { display: none !important; }
+      .card {
+        background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+        padding: 14px 16px; box-shadow: var(--shadow);
+        display: flex; flex-direction: column; gap: 10px;
+        overflow: hidden;
+        min-width: 0;
+      }
+      /* remove double margin when sections already use gap */
+      .card + .card { margin-top: 0; }
+      .card h3 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.4; display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .card > .hint { line-height: 1.65; }
+      .card > .hint + .row,
+      .card > .hint + table,
+      .card > .hint + .grid2,
+      .card > .hint + #quota-body,
+      .card > .hint + #model-settings-list,
+      .card > .hint + .stats { margin-top: 2px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: auto; }
+      th, td {
+        text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line);
+        vertical-align: top; overflow-wrap: anywhere; word-break: break-word;
+      }
+      th { color: var(--ink-soft); font-weight: 600; font-size: 11.5px; letter-spacing: 0.02em; white-space: nowrap; }
+      td { line-height: 1.5; }
+      /* numeric polish + keep long identifiers from breaking layout */
+      code, .mono { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; word-break: break-all; }
+      /* usage tables: numeric columns right-aligned tabular */
+      #usage-model-body td:nth-child(n+2), #usage-upstream-body td:nth-child(n+2), #usage-day-body td:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
+      #usage-recent-body td:nth-child(n+6), #history-body td:nth-child(5), #history-body td:nth-child(6) { text-align: right; font-variant-numeric: tabular-nums; }
+      #usage-model-body td:first-child, #usage-upstream-body td:first-child, #usage-day-body td:first-child { text-align: left; }
+      /* empty row: centered, airy, not mistaken for an error */
+      tbody td.hint { padding: 18px 10px; text-align: center; border-bottom: none; line-height: 1.6; }
+      /* history/account long notes wrap instead of pushing table */
+      #history-body td:last-child, #accounts-body td:nth-child(2), #accounts-body td:nth-child(3) { max-width: 320px; }
+      input, select, textarea, button { font: inherit; color: inherit; }
+      input, select, textarea {
+        background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-sm);
+        padding: 6px 9px; min-height: 30px; transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+      }
+      input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-soft) 85%, transparent); }
+      input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var(--line) 85%, var(--ink-soft) 15%); }
+      input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); background: var(--card); }
+      /* buttons: consistent 30px footprint, clear hover/active/disabled */
+      button {
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        min-height: 30px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-sm);
+        padding: 0 12px; cursor: pointer; font-weight: 500; line-height: 1;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, filter 120ms ease, transform 60ms ease, box-shadow 120ms ease, opacity 120ms ease;
+        white-space: nowrap; user-select: none; -webkit-user-select: none;
+      }
+      button:hover { background: var(--accent-soft); border-color: color-mix(in srgb, var(--line) 80%, var(--accent) 20%); }
+      button:active { transform: translateY(0.5px); filter: brightness(0.98); }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(16,24,32,0.08); }
+      button.primary:hover { filter: brightness(1.06); border-color: var(--accent); }
+      button.primary:active { filter: brightness(0.98); }
+      button.danger { color: var(--bad); }
+      button.danger:hover { background: color-mix(in srgb, var(--bad) 10%, var(--card)); border-color: color-mix(in srgb, var(--bad) 28%, var(--line)); }
+      button:disabled { opacity: 0.52; cursor: not-allowed; transform: none; filter: none; box-shadow: none; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 0; min-width: 0; }
+      .row > label { color: var(--ink-soft); min-width: 92px; font-size: 12px; font-weight: 500; line-height: 1.4; flex: none; }
+      .row > input, .row > select { flex: 1 1 160px; min-width: 0; }
+      .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 8px; font-size: 11px; border: 1px solid var(--line); color: var(--ink-soft); line-height: 1.6; white-space: nowrap; }
+      .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); background: color-mix(in srgb, var(--ok) 9%, transparent); }
+      .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+      .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); background: color-mix(in srgb, var(--bad) 9%, transparent); }
+      .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-width: 0; }
+      .chip { border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; font-size: 12px; display: inline-flex; gap: 6px; align-items: center; background: var(--card); max-width: 100%; overflow: hidden; }
+      .chip > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+      .hint { color: var(--ink-soft); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+      .hint code { color: var(--ink-soft); background: color-mix(in srgb, var(--line) 55%, transparent); padding: 0 4px; border-radius: 4px; word-break: break-all; }
+      .log { border-top: 1px solid var(--line); background: var(--card); max-height: 150px; overflow: auto; padding: 8px 14px; scrollbar-width: thin; }
+      .log pre { margin: 0; font-family: var(--mono); font-size: 11px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; color: var(--ink-soft); }
+      .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-width: 0; }
+      .grid2 > div { min-width: 0; }
+      .busy {
+        display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+        background: var(--accent-soft); border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.5;
+        color: var(--ink); min-width: 0; overflow-wrap: anywhere;
+      }
+      .busy[hidden] { display: none; }
+      .spin { flex: none; display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: picp-spin 0.7s linear infinite; opacity: 0.9; }
+      @keyframes picp-spin { to { transform: rotate(360deg); } }
+      .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap: 8px; margin: 2px 0 0; }
+      .stat { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: color-mix(in srgb, var(--card) 92%, var(--bg)); min-width: 0; overflow: hidden; }
+      .stat-key { color: var(--ink-soft); font-size: 11px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .stat-value { font-family: var(--mono); font-size: 13px; line-height: 1.45; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .bad-text { color: var(--bad); }
+      .warn-text { color: var(--warn); }
+      /* Official quota card, shaped like the DSH original's UsageCard: the bar is
+         the *used* share (green until 70%, amber to 90%, red above) and a pool is
+         read one account at a time, so a longer list never pushes the reading
+         below the fold. An unreadable account is a grey line, not a red one. */
+      .quota-account { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+      .quota-bars { display: flex; flex-direction: column; gap: 10px; }
+      .quota-item { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; background: color-mix(in srgb, var(--card) 96%, var(--bg)); min-width: 0; }
+      .quota-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+      .quota-label { color: var(--ink-soft); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .quota-value { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; flex: none; }
+      .quota-track { height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
+      .quota-fill { height: 100%; border-radius: 999px; background: var(--ok); transition: width 320ms cubic-bezier(0.22, 1, 0.36, 1); }
+      .quota-fill.warn { background: var(--warn); }
+      .quota-fill.bad { background: var(--bad); }
+      .quota-note { color: var(--ink-soft); font-size: 12px; }
+      .quota-muted { color: var(--ink-soft); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+      .quota-pager { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .quota-nav {
+        box-sizing: border-box; width: 28px; height: 28px; flex: none; padding: 0;
+        border: 1px solid var(--line); border-radius: 8px; font-size: 15px; line-height: 1;
+        display: inline-flex; align-items: center; justify-content: center; background: var(--card);
+      }
+      .quota-nav:hover { background: var(--accent-soft); }
+      .quota-who { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+      .quota-acct { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+      .quota-active { font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; color: var(--ink-soft); white-space: nowrap; flex: none; }
+      .quota-pos { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink-soft); white-space: nowrap; flex: none; }
+      .quota-key { font-size: 12px; font-family: var(--mono); color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 180px; }
+      details.model-entry { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin-top: 8px; background: var(--card); transition: border-color 120ms ease, background-color 120ms ease; }
+      details.model-entry[open] { background: var(--bg); border-color: color-mix(in srgb, var(--line) 80%, var(--accent) 20%); }
+      details.model-entry > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; list-style: none; min-width: 0; }
+      details.model-entry > summary::-webkit-details-marker { display: none; }
+      .model-body { padding-top: 10px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+      .levels { display: flex; gap: 6px; flex-wrap: wrap; }
+      .levels label { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; min-width: 0; background: var(--card); cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease; }
+      .levels label:hover { border-color: color-mix(in srgb, var(--line) 75%, var(--accent) 25%); background: var(--accent-soft); }
+      .levels input { margin: 0; accent-color: var(--accent); }
+      .row > label.wide { min-width: 132px; }
+      @media (max-width: 1000px) {
+        main { padding: 12px 12px 16px; }
+        .bar { padding: 8px 12px; }
+        .card { padding: 12px 12px; }
+        #history-body td:last-child, #accounts-body td:nth-child(2), #accounts-body td:nth-child(3) { max-width: 220px; }
+      }
+      @media (max-width: 720px) {
+        .grid2 { grid-template-columns: 1fr; }
+        .row { gap: 6px 8px; }
+        .row > label { min-width: 78px; }
+        .row > label.wide { min-width: 98px; }
+        .bar b, .bar .hint { font-size: 12px; }
+        th, td { padding: 6px 6px; font-size: 11.5px; }
+        .stats { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .spin { animation: none; }
+        .quota-fill { transition: none; }
+        button, input, select, textarea, .tabs button, .dot { transition: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="bar">
+        <span class="dot" id="dot"></span>
+        <b id="state">正在连接插件…</b>
+        <span class="hint" id="meta"></span>
+        <span class="spacer"></span>
+        <button id="copy-provider">复制 provider 地址</button>
+        <button id="refresh">刷新</button>
+        <button id="restart">重启网关</button>
+      </header>
+      <div class="busy" id="busy" role="status" aria-live="polite" hidden></div>
+
+      <nav class="tabs" id="tabs">
+        <button data-tab="accounts" aria-selected="true">账号池</button>
+        <button data-tab="models" aria-selected="false">模型与通道</button>
+        <button data-tab="history" aria-selected="false">请求历史</button>
+        <button data-tab="usage" aria-selected="false">用量</button>
+        <button data-tab="settings" aria-selected="false">设置</button>
+      </nav>
+
+      <main>
+        <section id="tab-accounts">
+          <div class="card">
+            <h3>账号池</h3>
+            <div class="hint" id="accounts-hint"></div>
+            <table>
+              <thead>
+                <tr><th>名称</th><th>来源</th><th>密钥</th><th>状态</th><th>操作</th></tr>
+              </thead>
+              <tbody id="accounts-body"></tbody>
+            </table>
+            <div class="row" style="margin-top: 10px">
+              <label>模式</label>
+              <select id="account-mode">
+                <option value="roundrobin">roundrobin（轮询）</option>
+                <option value="single">single（固定一个）</option>
+              </select>
+              <input id="active-account" placeholder="single 模式下的账号名" style="width: 200px" />
+              <button id="save-mode">保存模式</button>
+              <button id="reset-cooldowns">复位账号池</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 id="account-form-title">新增账号</h3>
+            <div class="hint">密钥写入插件数据目录的 config.json（明文，权限 600）。宿主给插件进程的是最小环境（PATH/TEMP/HOME 一类），读不到你自己的环境变量，所以这里没有 env 来源。</div>
+            <div class="row">
+              <input id="new-name" placeholder="账号名（如 backup）" style="width: 160px" />
+              <input id="new-display" placeholder="显示名（可选）" style="width: 160px" />
+              <input id="new-key" placeholder="Cline API Key" style="flex: 1; min-width: 220px" />
+              <button class="primary" id="add-account">添加</button>
+              <button id="cancel-edit" hidden>取消</button>
+            </div>
+            <div class="hint">提示：模型设置页里填的那把 key 会作为 “host” 账号参与池（内存中使用，不落盘），它不列在上面的表里。</div>
+          </div>
+        </section>
+
+        <section id="tab-models" hidden>
+          <div class="card">
+            <h3>模型</h3>
+            <div class="row">
+              <label>选择模型</label>
+              <select id="model-select" style="min-width: 320px"></select>
+              <button id="probe">探测通道</button>
+              <button id="validate">校验通道</button>
+              <button id="test">试跑一次</button>
+            </div>
+            <div id="model-detail" class="hint"></div>
+          </div>
+
+          <div class="card">
+            <h3>通道 pin（对后续请求立即生效）</h3>
+            <div class="grid2">
+              <div>
+                <div class="row"><label>upstreams</label><input id="pin-upstreams" placeholder="按顺序，逗号分隔，例如 zai, baseten" style="flex: 1" /></div>
+                <div class="row"><label>exclude</label><input id="pin-exclude" placeholder="要排除的通道，逗号分隔" style="flex: 1" /></div>
+                <div class="row">
+                  <label>pinMode</label>
+                  <select id="pin-mode">
+                    <option value="strict">strict（只允许这些通道）</option>
+                    <option value="preferred">preferred（优先但不排他）</option>
+                  </select>
+                  <label style="min-width: 40px">sort</label>
+                  <select id="pin-sort">
+                    <option value="">（不设置）</option>
+                    <option value="cost">cost</option>
+                    <option value="ttft">ttft</option>
+                    <option value="tps">tps</option>
+                  </select>
+                </div>
+                <div class="row">
+                  <button class="primary" id="save-pin">保存 pin</button>
+                  <button class="danger" id="clear-pin">清除 pin</button>
+                </div>
+              </div>
+              <div>
+                <div class="hint">通道列表来自“探测通道”：网关故意 pin 一个不存在的通道，让路由器在花掉 token 前把所有可用通道报出来。校验会把每个通道逐个 pin 一次并记录结论。</div>
+                <div id="upstreams" class="chips" style="margin-top: 8px"></div>
+                <div id="probe-result" class="hint" style="margin-top: 8px"></div>
+              </div>
+            </div>
+          </div>
+          <div class="card" id="model-settings">
+            <h3>模型参数（自填 + 注册）</h3>
+            <div class="hint">
+              这里改的是宿主读的那份 manifest：只有勾上「注册」的模型才会出现在宿主的模型选择器里，未注册的模型只在网关里存在（选中它发请求仍可用，但宿主的模型列表里看不到）。另外注意：宿主里若已存在同 id 的「自建」provider 模型，请求可能由它直接服务而不经过本网关 —— 那些请求在 pin、账号池和用量里都看不到（看「用量」页有没有数据就能判断）。
+              保存只提交改动过的字段。注意：宿主 provider 行只在插件安装/启用（或宿主启动）时同步，实测开发热重载**不会**刷新它 —— 保存后要让新参数/新模型真的进模型选择器，请到插件页把本插件停用再启用（或重启 PI-Desktop）。
+            </div>
+            <div class="hint">
+              「已改」= 这个字段被本面板覆盖过；「官方值」= Cline 目录里的值，只作对照，不会自动回写。档位控件来自目录：effort 是滑杆、toggle 是开关、none 表示该模型没有思考档位。
+            </div>
+            <div id="model-settings-list"></div>
+          </div>
+        </section>
+
+        <section id="tab-history" hidden>
+          <div class="card">
+            <h3>最近请求</h3>
+            <div class="row">
+              <input id="history-filter" placeholder="按模型过滤（可空）" style="width: 220px" />
+              <button id="history-load">刷新</button>
+              <span class="hint" id="history-hint"></span>
+            </div>
+            <table>
+              <thead>
+                <tr><th>时间</th><th>模型</th><th>通道</th><th>账号</th><th>状态</th><th>耗时</th><th>备注</th></tr>
+              </thead>
+              <tbody id="history-body"></tbody>
+            </table>
+          </div>
+        </section>
+        <section id="tab-usage" hidden>
+          <div class="card" id="quota-card">
+            <div class="row">
+              <h3 id="quota-title">官方额度</h3>
+              <span class="spacer"></span>
+              <button id="quota-refresh">刷新</button>
+            </div>
+            <div class="hint">
+              数字来自 Cline 官方接口 <code>GET /users/me/plan/usage-limits</code>，显示的是该账号的<b>已用</b>比例（条长=已用，≥90% 红、≥70% 橙）；
+              和下面「用量」那张卡的本地账本不是一个口径 —— 账本只统计经过本网关的请求，官方额度里还包含这个账号在别处用掉的量。
+              只列插件读得到密钥的账号（「账号池」里那几条内联账号）：模型设置页那把密钥（host）只活在请求内存里，读不到，所以不在这里出现。
+            </div>
+            <div id="quota-body"></div>
+          </div>
+          <div class="card" id="usage-card">
+            <h3>用量</h3>
+            <div class="row">
+              <label>时间范围</label>
+              <select id="usage-days">
+                <option value="1">最近 1 天</option>
+                <option value="7" selected>最近 7 天</option>
+                <option value="30">最近 30 天</option>
+                <option value="0">全部</option>
+              </select>
+              <button class="primary" id="usage-refresh">刷新</button>
+              <button class="danger" id="usage-clear">清空账本</button>
+            </div>
+            <div class="hint">
+              账本里的数字只来自上游每次响应最终帧的 usage —— 官方额度是 Cline 官方按账号给的（见上方「官方额度」卡片），和这里不是同一个口径。没有成本时显示「—」；
+              「有成本记录」是窗口内带成本的请求占比，形如 3/10。按天分组用的是 UTC 日期，明细里的时间显示为本机时区。
+            </div>
+            <div class="stats" id="usage-totals"></div>
+            <div class="hint" id="usage-hint"></div>
+          </div>
+          <div class="card">
+            <h3>按模型</h3>
+            <table>
+              <thead>
+                <tr><th>模型</th><th>请求</th><th>失败</th><th>输入 tokens</th><th>输出 tokens</th><th>总 tokens</th><th>成本</th><th>平均耗时</th></tr>
+              </thead>
+              <tbody id="usage-model-body"></tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>按通道</h3>
+            <table>
+              <thead>
+                <tr><th>通道</th><th>请求</th><th>失败</th><th>输入 tokens</th><th>输出 tokens</th><th>总 tokens</th><th>成本</th><th>平均耗时</th></tr>
+              </thead>
+              <tbody id="usage-upstream-body"></tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>按天（UTC 日期）</h3>
+            <table>
+              <thead>
+                <tr><th>日期</th><th>请求</th><th>失败</th><th>输入 tokens</th><th>输出 tokens</th><th>总 tokens</th><th>成本</th><th>平均耗时</th></tr>
+              </thead>
+              <tbody id="usage-day-body"></tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>最近请求明细</h3>
+            <table>
+              <thead>
+                <tr><th>时间（本地）</th><th>模型</th><th>通道</th><th>账号</th><th>状态</th><th>耗时</th><th>总 tokens</th><th>成本</th><th>备注</th></tr>
+              </thead>
+              <tbody id="usage-recent-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="tab-settings" hidden>
+          <div class="card">
+            <h3>网关设置</h3>
+            <div class="row"><label>上游 baseUrl</label><input id="set-baseurl" style="flex: 1; min-width: 280px" /></div>
+            <div class="row"><label>请求超时 ms</label><input id="set-request" type="number" style="width: 140px" />
+              <label style="min-width: 110px">流空闲超时 ms</label><input id="set-idle" type="number" style="width: 140px" /></div>
+            <div class="row"><label>探测超时 ms</label><input id="set-probe" type="number" style="width: 140px" />
+              <label style="min-width: 110px">最大并发</label><input id="set-concurrency" type="number" style="width: 140px" /></div>
+            <div class="row"><button class="primary" id="save-settings">保存</button><button id="reload-config">重新读取配置文件</button></div>
+            <div class="hint" id="config-path"></div>
+          </div>
+          <div class="card">
+            <h3>怎么用</h3>
+            <div class="hint">
+              1. 到“设置 → 模型 / Providers”，找到本插件声明的 provider「Cline Pass（本地网关）」，填入 Cline API Key（这把 key 会作为 host 账号参与池）。<br />
+              2. 在模型选择里选 cline-pass/* 的模型；请求会经本机网关转发到上游，pin / failover / 账号轮询都在网关里生效。<br />
+              3. 网关只监听 127.0.0.1；插件卸载或禁用时端口会被释放。
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="log"><pre id="log">就绪。</pre></footer>
+    </div>
+
+    <script>
+      (function () {
+        "use strict";
+        var CHANNEL = "skill.setEnabled";
+        var bridge = window.pluginBridge;
+        var state = { status: null, model: "", history: [], openModels: {}, quota: null, quotaFailed: false, quotaPending: false, quotaPicked: 0, accountEdit: "" };
+
+        function log(text) {
+          var el = document.getElementById("log");
+          var stamp = new Date().toLocaleTimeString();
+          el.textContent = "[" + stamp + "] " + text + "\n" + el.textContent.split("\n").slice(0, 60).join("\n");
+        }
+
+        /** Ask the plugin process for one action, with a local timeout. */
+        function call(payload, timeoutMs) {
+          if (!bridge || !bridge.invoke) return Promise.reject(new Error("面板桥不可用（请在 PI-Desktop 里打开本面板）"));
+          var limit = timeoutMs || 20000;
+          return Promise.race([
+            bridge.invoke(CHANNEL, payload),
+            new Promise(function (_, reject) {
+              setTimeout(function () { reject(new Error("面板调用超过 " + Math.round(limit / 1000) + " 秒仍没有回应（宿主对面板调用的上限是 30 秒）。请改用 agent 工具 cline_pass_probe / cline_pass_validate / cline_pass_test 重跑（它们有 110 秒），或用 cline_pass_history 看已经完成的请求。")); }, limit);
+            }),
+          ]);
+        }
+
+        function fail(error) {
+          var message = error && error.message ? error.message : String(error);
+          log("失败：" + message);
+          return null;
+        }
+
+        /* -------------------------------- 点击反馈 ------------------------------- */
+        /* Every panel call goes through `submit`: the lock is taken synchronously in
+           the click handler, so a second click cannot start a second call; the
+           counter proves the panel is still waiting instead of looking dead; and
+           every exit path - answer, error, timeout - gives the buttons back. */
+        var busy = { active: false, label: "", seconds: 0, timer: 0, startedAt: 0, button: null, original: "", locked: [] };
+
+        function since(started) {
+          return ((Date.now() - started) / 1000).toFixed(1);
+        }
+
+        /** Every button that submits something; the tab strip is navigation, not an action. */
+        function actionButtons() {
+          return Array.prototype.filter.call(document.querySelectorAll("button"), function (element) {
+            return !element.closest("#tabs");
+          });
+        }
+
+        function busySentence() {
+          return busy.label + "… 已等待 " + busy.seconds + " 秒（面板单次调用上限约 25 秒；超时会自动报错并恢复按钮）";
+        }
+
+        function paintBusy() {
+          var strip = document.getElementById("busy");
+          if (!strip) return;
+          if (!busy.active) {
+            strip.hidden = true;
+            strip.textContent = "";
+            return;
+          }
+          strip.hidden = false;
+          strip.textContent = "";
+          strip.appendChild(node("span", "spin"));
+          strip.appendChild(node("span", null, busySentence()));
+          if (busy.button && document.contains(busy.button)) {
+            busy.button.textContent = "";
+            busy.button.appendChild(node("span", "spin"));
+            busy.button.appendChild(node("span", null, " " + busy.label + " " + busy.seconds + "s"));
+          }
+        }
+
+        /** Lock the panel for one action; false means one is already running. */
+        function beginBusy(label, button) {
+          if (busy.active) {
+            log("已有操作还在进行（" + busy.label + "，已 " + busy.seconds + " 秒），这次点击先忽略，等它结束再点。");
+            return false;
+          }
+          busy.active = true;
+          busy.label = label;
+          busy.seconds = 0;
+          busy.startedAt = Date.now();
+          busy.button = button && document.contains(button) ? button : null;
+          busy.original = busy.button ? busy.button.textContent : "";
+          if (busy.button) busy.button.title = "面板单次调用上限约 25 秒";
+          busy.locked = actionButtons().map(function (element) {
+            var wasDisabled = element.disabled;
+            element.disabled = true;
+            return [element, wasDisabled];
+          });
+          busy.timer = window.setInterval(function () {
+            busy.seconds += 1;
+            paintBusy();
+          }, 1000);
+          paintBusy();
+          return true;
+        }
+
+        /** Give the buttons back; safe to call twice and after a re-render. */
+        function endBusy() {
+          if (!busy.active) return;
+          window.clearInterval(busy.timer);
+          busy.timer = 0;
+          busy.active = false;
+          busy.locked.forEach(function (pair) {
+            if (document.contains(pair[0])) pair[0].disabled = pair[1];
+          });
+          busy.locked = [];
+          if (busy.button && document.contains(busy.button) && busy.original !== "") busy.button.textContent = busy.original;
+          busy.button = null;
+          busy.original = "";
+          busy.startedAt = 0;
+          paintBusy();
+        }
+
+        /**
+         * Give the panel back once one panel call settles: wrap the promise that
+         * `run(...)` returned. The action is written as
+         *
+         *   if (!beginBusy("正在…", this)) return;
+         *   release(run({ action: "…", … }, 25000)).then(…)
+         *
+         * so the lock is taken synchronously in the click handler (instant
+         * spinner, no second submit) and released on answer, failure and timeout alike.
+         */
+        function release(promise) {
+          var label = busy.label || "操作";
+          var started = busy.startedAt || Date.now();
+          return promise.then(
+            function (result) {
+              var ok = result !== null && (!result || result.ok !== false);
+              endBusy();
+              log(label + "：" + (ok ? "完成，按钮已恢复" : "失败，按钮已恢复") + "，用时 " + since(started) + " 秒。");
+              return result;
+            },
+            function (error) {
+              endBusy();
+              fail(error);
+              log(label + "：超时或异常，按钮已恢复（用时 " + since(started) + " 秒）。");
+              return null;
+            },
+          );
+        }
+        /* ------------------------------- rendering ------------------------------ */
+
+        function renderStatus() {
+          var status = state.status;
+          if (!status) return;
+          document.getElementById("dot").className = status.running ? "dot on" : "dot";
+          document.getElementById("state").textContent = status.running
+            ? "网关运行中 · 127.0.0.1:" + status.port
+            : "网关未运行" + (status.startError ? " · " + status.startError : "");
+          // The count matches the table below (inline rows only); the host account is
+          // mentioned separately because it is not a row you manage here.
+          var inlineCount = status.accounts.filter(function (account) { return account.source !== "host"; }).length;
+          var hostOn = status.accounts.some(function (account) { return account.source === "host" && account.enabled; });
+          document.getElementById("meta").textContent =
+            "build " + status.build + " · 在途 " + status.inFlight + "／队列 " + status.queued + " · 内联账号 " + inlineCount + (hostOn ? " + host" : "") + " · 请求记录 " + status.historySize;
+
+          var mode = document.getElementById("account-mode");
+          mode.value = status.accountMode;
+          document.getElementById("active-account").value = status.activeAccount || "";
+          document.getElementById("config-path").textContent = "配置文件：" + status.configFile;
+          var settings = {
+            "set-baseurl": status.baseUrl,
+            "set-request": status.requestTimeoutMs,
+            "set-idle": status.streamIdleTimeoutMs,
+            "set-probe": status.probeTimeoutMs,
+            "set-concurrency": status.maxConcurrentRequests,
+          };
+          Object.keys(settings).forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el && document.activeElement !== el) el.value = settings[id];
+          });
+
+          var hint = document.getElementById("accounts-hint");
+          var hasHost = status.accounts.some(function (account) { return account.source === "host" && account.enabled; });
+          hint.textContent = (status.running
+            ? "上游 baseUrl：" + status.baseUrl + " · provider 地址：" + status.providerBaseUrl
+            : "网关没有监听：" + (status.startError || "未知原因") + "（可点右上角“重启网关”再试）")
+            + (hasHost ? " · 模型设置页里的密钥会作为 host 账号参与轮转：它只在当次请求的内存里，插件读不到也改不了，所以不列在表里" : "");
+
+          var body = document.getElementById("accounts-body");
+          body.innerHTML = "";
+          // The host row is not something this table manages: its key is typed into the
+          // model settings page and lives only inside a request, so "no key / cannot edit
+          // / cannot delete" was pure noise. The hint above says where that key comes from.
+          var inline = status.accounts.filter(function (account) { return account.source !== "host"; });
+          inline.forEach(function (account) {
+            var tr = document.createElement("tr");
+            function cell(text, className) {
+              var td = document.createElement("td");
+              td.textContent = text;
+              if (className) td.className = className;
+              tr.appendChild(td);
+              return td;
+            }
+            cell(account.displayName + (account.name === account.displayName ? "" : " (" + account.name + ")"));
+            cell(account.source);
+            var hintCell = cell(account.keyConfigured ? account.keyHint : "未配置", account.keyConfigured ? "mono" : "hint");
+            if (account.duplicate === true) {
+              // Two rows holding one key are one Cline account: quota and usage will
+              // look "duplicated" until each row carries its own key.
+              hintCell.appendChild(node("span", "pill warn", "同一个 key"));
+            }
+            var td = document.createElement("td");
+            var pill = document.createElement("span");
+            if (account.cooling) {
+              pill.className = "pill warn";
+              pill.textContent = "冷却：" + account.reason + "（至 " + new Date(account.coolingUntil).toLocaleTimeString() + "）";
+            } else if (!account.keyConfigured) {
+              pill.className = "pill bad";
+              pill.textContent = "无可用密钥";
+            } else if (account.enabled) {
+              pill.className = "pill ok";
+              pill.textContent = "可用";
+            } else {
+              pill.className = "pill";
+              pill.textContent = "已停用";
+            }
+            td.appendChild(pill);
+            tr.appendChild(td);
+
+            var actions = document.createElement("td");
+            var edit = document.createElement("button");
+            edit.textContent = "编辑";
+            edit.onclick = function () { startAccountEdit(account); };
+            var toggle = document.createElement("button");
+            toggle.textContent = account.enabled ? "停用" : "启用";
+            toggle.style.marginLeft = "4px";
+            toggle.onclick = function () {
+              var enabling = !account.enabled;
+              if (!beginBusy((enabling ? "正在启用 " : "正在停用 ") + account.name, this)) return;
+              release(run({ action: "accounts", accountsAction: "update", name: account.name, enabled: enabling }, 20000)).then(refresh);
+            };
+            var test = document.createElement("button");
+            test.textContent = "测试";
+            test.style.marginLeft = "4px";
+            test.onclick = function () {
+              if (!beginBusy("正在测试 " + account.name, this)) return;
+              release(run({ action: "accounts", accountsAction: "test", name: account.name }, 25000)).then(refresh);
+            };
+            var remove = document.createElement("button");
+            remove.textContent = "删除";
+            remove.className = "danger";
+            remove.style.marginLeft = "4px";
+            remove.onclick = function () {
+              if (!beginBusy("正在删除账号 " + account.name, this)) return;
+              release(run({ action: "accounts", accountsAction: "remove", name: account.name }, 20000)).then(refresh);
+            };
+            actions.appendChild(edit);
+            actions.appendChild(toggle);
+            actions.appendChild(test);
+            actions.appendChild(remove);
+            tr.appendChild(actions);
+            body.appendChild(tr);
+          });
+          if (inline.length === 0) {
+            var empty = document.createElement("tr");
+            var tdEmpty = document.createElement("td");
+            tdEmpty.colSpan = 5;
+            tdEmpty.className = "hint";
+            tdEmpty.textContent = "还没有内联账号：在下面填一个账号名和 Cline API Key，点「添加」。";
+            empty.appendChild(tdEmpty);
+            body.appendChild(empty);
+          }
+
+          var select = document.getElementById("model-select");
+          var keep = state.model || select.value;
+          select.innerHTML = "";
+          status.models.forEach(function (model) {
+            var option = document.createElement("option");
+            option.value = model.id;
+            option.textContent = (model.name || model.id) + "  ·  " + model.id;
+            select.appendChild(option);
+          });
+          if (keep) select.value = keep;
+          state.model = select.value;
+          renderModel();
+          renderModelSettings();
+        }
+
+        function badge(status) {
+          var map = { ok: "ok", limited: "warn", bad: "bad", auth: "bad", "not-adopted": "warn", unknown: "" };
+          return map[status] === undefined ? "" : map[status];
+        }
+
+        function renderModel() {
+          var status = state.status;
+          if (!status) return;
+          var model = status.models.filter(function (entry) { return entry.id === state.model; })[0];
+          var detail = document.getElementById("model-detail");
+          var chips = document.getElementById("upstreams");
+          chips.innerHTML = "";
+          detail.textContent = "";
+          if (!model) return;
+          var parts = [];
+          parts.push("上下文 " + model.contextWindow.toLocaleString() + " / 输出 " + model.maxTokens.toLocaleString());
+          parts.push(model.reasoning ? "思考档位：off…max" : "无思考档位");
+          parts.push("图片：" + ((model.input || []).indexOf("image") >= 0 ? "支持" : "不支持"));
+          parts.push("管线：" + (model.pipeline || "未探测"));
+          parts.push("最近服务通道：" + (model.lastProvider || "—"));
+          if (model.probedAt) parts.push("探测于 " + new Date(model.probedAt).toLocaleString());
+          detail.textContent = parts.join(" · ");
+          if (model.lastError) detail.textContent += " · 上次探测错误：" + model.lastError;
+
+          (model.upstreams || []).forEach(function (name) {
+            var chip = document.createElement("span");
+            chip.className = "chip";
+            var text = document.createElement("span");
+            text.textContent = name;
+            chip.appendChild(text);
+            var verdict = (model.upstreamStatus || {})[name];
+            if (verdict) {
+              var pill = document.createElement("span");
+              pill.className = "pill " + badge(verdict.status);
+              pill.textContent = verdict.status;
+              pill.title = verdict.note || "";
+              chip.appendChild(pill);
+            }
+            chips.appendChild(chip);
+          });
+          if ((model.upstreams || []).length === 0) {
+            var hint = document.createElement("span");
+            hint.className = "hint";
+            hint.textContent = "还没有通道列表：点“探测通道”。";
+            chips.appendChild(hint);
+          }
+
+          var pin = model.pin || {};
+          document.getElementById("pin-upstreams").value = (pin.upstreams || []).join(", ");
+          document.getElementById("pin-exclude").value = (pin.exclude || []).join(", ");
+          document.getElementById("pin-mode").value = pin.pinMode === "preferred" ? "preferred" : "strict";
+          document.getElementById("pin-sort").value = pin.sort || "";
+        }
+
+        function renderHistory() {
+          var rows = state.history || [];
+          var body = document.getElementById("history-body");
+          body.innerHTML = "";
+          rows.forEach(function (row) {
+            var tr = document.createElement("tr");
+            [
+              new Date(row.ts).toLocaleTimeString(),
+              row.model || "",
+              row.upstream || "",
+              row.account || "",
+              String(row.status || ""),
+              (row.ms || 0) + " ms",
+              row.note || "",
+            ].forEach(function (value) {
+              var td = document.createElement("td");
+              td.textContent = value;
+              tr.appendChild(td);
+            });
+            body.appendChild(tr);
+          });
+          document.getElementById("history-hint").textContent = "共 " + rows.length + " 条";
+        }
+
+
+        /* ------------------------- 模型参数（自填 + 注册） ------------------------- */
+
+        var LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+        var LIMITS = { contextWindow: { min: 1000, max: 100000000 }, maxTokens: { min: 1, max: 100000000 } };
+
+        function node(tag, className, text) {
+          var created = document.createElement(tag);
+          if (className) created.className = className;
+          if (text !== undefined && text !== null) created.textContent = text;
+          return created;
+        }
+
+        function pillTag(text, kind) {
+          return node("span", "pill" + (kind ? " " + kind : ""), text);
+        }
+
+        function count(value) {
+          return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "—";
+        }
+
+        function localTime(ts) {
+          return typeof ts === "number" && ts > 0 ? new Date(ts).toLocaleString() : "—";
+        }
+
+        /** A cost, or an em dash when no row behind this bucket reported one. */
+        function money(row) {
+          var source = row || {};
+          if (typeof source.cost !== "number") return "—";
+          var known = String(source.costKnown || "").split("/")[0];
+          if (known !== "" && Number(known) === 0) return "—";
+          if (source.cost === 0) return "0";
+          return source.cost.toFixed(6).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+        }
+
+        function sameLevels(left, right) {
+          var a = (left || []).slice().sort();
+          var b = (right || []).slice().sort();
+          return a.length === b.length && a.every(function (level, index) { return level === b[index]; });
+        }
+
+        function checkedLevels(scope) {
+          return LEVELS.filter(function (level) {
+            var box = scope.querySelector('input[data-level="' + level + '"]');
+            return box !== null && box.checked;
+          });
+        }
+
+        function focusModelEntry(id) {
+          var cards = document.querySelectorAll("#model-settings-list details.model-entry");
+          for (var index = 0; index < cards.length; index += 1) {
+            if (cards[index].dataset.model === id) {
+              cards[index].open = true;
+              cards[index].scrollIntoView({ block: "nearest" });
+              return;
+            }
+          }
+        }
+
+        /** The fields that make one model's form a different form. */
+        function modelSignature(models) {
+          return models.map(function (model) {
+            return [
+              model.id, model.registered, model.contextWindow, model.maxTokens, model.supportsImages,
+              (model.thinkingLevels || []).join("+"), model.defaultThinkingLevel, model.lever,
+              model.fallback === true, (model.edited || []).join("+"),
+            ].join("|");
+          }).join("\n");
+        }
+
+        function modelSettingsCard(model) {
+          var entry = node("details", "model-entry");
+          entry.dataset.model = model.id;
+          entry.open = model.id in state.openModels ? state.openModels[model.id] === true : model.id === state.model;
+          entry.addEventListener("toggle", function () { state.openModels[model.id] = entry.open; });
+
+          var summary = node("summary");
+          summary.appendChild(node("span", "mono", model.id));
+          if (model.name && model.name !== model.id) summary.appendChild(node("span", "hint", model.name));
+          summary.appendChild(pillTag(model.registered === true ? "已注册：出现在宿主模型选择器里" : "未注册：不会出现在宿主模型选择器里", model.registered === true ? "ok" : "warn"));
+          if (model.fallback === true) summary.appendChild(pillTag("兜底默认值", "bad"));
+          if ((model.edited || []).length > 0) summary.appendChild(pillTag("已改：" + model.edited.join("、"), "warn"));
+          summary.appendChild(pillTag("档位控件 " + (model.lever || "none")));
+          entry.appendChild(summary);
+
+          var body = node("div", "model-body");
+          var published = model.published || {};
+          body.appendChild(node("div", "hint", "官方值（只作对照）：上下文 " + count(published.contextWindow) + " · 输出 " + count(published.maxTokens) + " · 图片 " + (published.supportsImages === true ? "支持" : "不支持") + " · 档位 " + ((published.thinkingLevels || []).join("、") || "—")));
+          if (model.fallback === true) {
+            body.appendChild(node("div", "hint warn-text", "该模型在 Cline 官方目录没有独立条目，窗口/输出是兜底默认值，别当真实能力。"));
+          }
+          if (model.registered !== true) {
+            body.appendChild(node("div", "hint warn-text", "未注册：保存后也不会出现在宿主的模型选择器里，要先勾上「注册进宿主模型选择器」再保存。"));
+          }
+
+          function field(key, labelText, control) {
+            var row = node("div", "row");
+            row.appendChild(node("label", "wide", labelText));
+            row.appendChild(control);
+            if ((model.edited || []).indexOf(key) >= 0) row.appendChild(pillTag("已改", "warn"));
+            return row;
+          }
+
+          var grid = node("div", "grid2");
+          var left = node("div");
+          var right = node("div");
+
+          var registered = node("input");
+          registered.type = "checkbox";
+          registered.dataset.field = "registered";
+          registered.checked = model.registered === true;
+          left.appendChild(field("registered", "注册进宿主模型选择器", registered));
+
+          var context = node("input");
+          context.type = "number";
+          context.dataset.field = "contextWindow";
+          context.min = String(LIMITS.contextWindow.min);
+          context.max = String(LIMITS.contextWindow.max);
+          context.style.width = "150px";
+          context.value = String(model.contextWindow);
+          left.appendChild(field("contextWindow", "上下文窗口", context));
+
+          var maxTokens = node("input");
+          maxTokens.type = "number";
+          maxTokens.dataset.field = "maxTokens";
+          maxTokens.min = String(LIMITS.maxTokens.min);
+          maxTokens.max = String(LIMITS.maxTokens.max);
+          maxTokens.style.width = "150px";
+          maxTokens.value = String(model.maxTokens);
+          left.appendChild(field("maxTokens", "最大输出", maxTokens));
+
+          var images = node("input");
+          images.type = "checkbox";
+          images.dataset.field = "supportsImages";
+          images.checked = model.supportsImages === true;
+          left.appendChild(field("supportsImages", "支持图片输入", images));
+
+          var levelsRow = node("div", "row");
+          levelsRow.appendChild(node("label", "wide", "思考档位"));
+          var levels = node("div", "levels");
+          LEVELS.forEach(function (level) {
+            var wrap = node("label");
+            var box = node("input");
+            box.type = "checkbox";
+            box.dataset.level = level;
+            box.checked = (model.thinkingLevels || []).indexOf(level) >= 0;
+            wrap.appendChild(box);
+            wrap.appendChild(node("span", null, level));
+            levels.appendChild(wrap);
+          });
+          levelsRow.appendChild(levels);
+          if ((model.edited || []).indexOf("thinkingLevels") >= 0) levelsRow.appendChild(pillTag("已改", "warn"));
+          right.appendChild(levelsRow);
+
+          var defaultLevel = node("select");
+          defaultLevel.dataset.field = "defaultThinkingLevel";
+          right.appendChild(field("defaultThinkingLevel", "默认档位", defaultLevel));
+
+          /** The dropdown may only offer levels that are ticked right now. */
+          function refreshLevelChoices() {
+            var candidates = checkedLevels(entry);
+            var previous = defaultLevel.value;
+            defaultLevel.textContent = "";
+            candidates.forEach(function (level) {
+              var option = document.createElement("option");
+              option.value = level;
+              option.textContent = level;
+              defaultLevel.appendChild(option);
+            });
+            if (candidates.indexOf(previous) >= 0) defaultLevel.value = previous;
+            else if (candidates.indexOf(model.defaultThinkingLevel) >= 0) defaultLevel.value = model.defaultThinkingLevel;
+            defaultLevel.disabled = candidates.length === 0;
+          }
+          Array.prototype.forEach.call(levels.querySelectorAll("input[data-level]"), function (box) {
+            box.onchange = refreshLevelChoices;
+          });
+          refreshLevelChoices();
+
+          grid.appendChild(left);
+          grid.appendChild(right);
+          body.appendChild(grid);
+
+          var actions = node("div", "row");
+          var save = node("button", "primary", "保存模型参数");
+          save.onclick = function () { saveModel(this, entry, model); };
+          var restore = node("button", null, "恢复官方值");
+          restore.onclick = function () { restoreModel(this, model); };
+          actions.appendChild(save);
+          actions.appendChild(restore);
+          actions.appendChild(node("span", "hint", "只提交改动过的字段；没有改动就不发请求。"));
+          body.appendChild(actions);
+
+          entry.appendChild(body);
+          return entry;
+        }
+
+        function renderModelSettings(force) {
+          var host = document.getElementById("model-settings-list");
+          var status = state.status;
+          if (!host || !status) return;
+          var models = status.models || [];
+          var cards = {};
+          Array.prototype.forEach.call(host.querySelectorAll("details.model-entry"), function (card) {
+            cards[card.dataset.model] = card;
+          });
+          // Rebuild one card at a time: a whole-list rebuild would throw away the
+          // half-typed values in the other models' forms.
+          models.forEach(function (model) {
+            var signature = modelSignature([model]);
+            var card = cards[model.id];
+            delete cards[model.id];
+            if (!force && card && card.dataset.signature === signature) return;
+            var next = modelSettingsCard(model);
+            next.dataset.signature = signature;
+            if (card) host.replaceChild(next, card);
+            else host.appendChild(next);
+          });
+          Object.keys(cards).forEach(function (id) { host.removeChild(cards[id]); });
+        }
+
+        function formValues(entry) {
+          var field = function (name) { return entry.querySelector('[data-field="' + name + '"]'); };
+          return {
+            registered: field("registered").checked === true,
+            contextWindow: Math.floor(Number(field("contextWindow").value)),
+            maxTokens: Math.floor(Number(field("maxTokens").value)),
+            supportsImages: field("supportsImages").checked === true,
+            thinkingLevels: checkedLevels(entry),
+            defaultThinkingLevel: field("defaultThinkingLevel").value,
+          };
+        }
+
+        /** Local guard, so an impossible value is a sentence instead of a silent drop. */
+        function formProblem(next, model) {
+          if (!Number.isFinite(next.contextWindow) || next.contextWindow < LIMITS.contextWindow.min || next.contextWindow > LIMITS.contextWindow.max) {
+            return model.id + "：上下文窗口要填 " + LIMITS.contextWindow.min + "~" + LIMITS.contextWindow.max + " 的整数（宿主用它算提示词预算）。没有提交。";
+          }
+          if (!Number.isFinite(next.maxTokens) || next.maxTokens < LIMITS.maxTokens.min || next.maxTokens > LIMITS.maxTokens.max) {
+            return model.id + "：最大输出要填 " + LIMITS.maxTokens.min + "~" + LIMITS.maxTokens.max + " 的整数。没有提交。";
+          }
+          if (next.thinkingLevels.length === 0) return model.id + "：思考档位至少勾一项。没有提交。";
+          if (next.thinkingLevels.indexOf("off") < 0) return model.id + "：思考档位必须包含 off（否则这个模型永远关不掉思考）。没有提交。";
+          if (next.thinkingLevels.indexOf(next.defaultThinkingLevel) < 0) return model.id + "：默认档位只能从勾选的档位里选。没有提交。";
+          return "";
+        }
+
+        function patchKeys(patch) {
+          return Object.keys(patch).filter(function (key) { return key !== "action" && key !== "model"; });
+        }
+
+        function saveModel(button, entry, model) {
+          var next = formValues(entry);
+          var problem = formProblem(next, model);
+          if (problem) { log(problem); return; }
+          var patch = { action: "setModel", model: model.id };
+          if (next.registered !== model.registered) patch.registered = next.registered;
+          if (next.contextWindow !== model.contextWindow) patch.contextWindow = next.contextWindow;
+          if (next.maxTokens !== model.maxTokens) patch.maxTokens = next.maxTokens;
+          if (next.supportsImages !== model.supportsImages) patch.supportsImages = next.supportsImages;
+          if (!sameLevels(next.thinkingLevels, model.thinkingLevels)) patch.thinkingLevels = next.thinkingLevels;
+          if (next.defaultThinkingLevel !== model.defaultThinkingLevel) patch.defaultThinkingLevel = next.defaultThinkingLevel;
+          var keys = patchKeys(patch);
+          if (keys.length === 0) {
+            log(model.id + "：没有改动，没有提交（被覆盖过的字段会标「已改」）。");
+            return;
+          }
+          log(model.id + "：提交 " + keys.join("、"));
+          if (!beginBusy("正在保存 " + model.id, button)) return;
+          release(run(patch, 25000)).then(function (result) {
+            afterSetModel(model.id, keys, result);
+          });
+        }
+
+        function restoreModel(button, model) {
+          var published = model.published || {};
+          var patch = {
+            action: "setModel",
+            model: model.id,
+            contextWindow: published.contextWindow,
+            maxTokens: published.maxTokens,
+            supportsImages: published.supportsImages === true,
+          };
+          if ((published.thinkingLevels || []).length > 0) patch.thinkingLevels = published.thinkingLevels.slice();
+          log(model.id + "：提交官方值（上下文 " + count(published.contextWindow) + " · 输出 " + count(published.maxTokens) + " · 图片 " + (published.supportsImages === true ? "支持" : "不支持") + " · 档位 " + ((published.thinkingLevels || []).join("、") || "—") + "）");
+          if (!beginBusy("正在恢复 " + model.id + " 的官方值", button)) return;
+          release(run(patch, 25000)).then(function (result) {
+            afterSetModel(model.id, ["contextWindow", "maxTokens", "supportsImages", "thinkingLevels"], result);
+          });
+        }
+
+        function afterSetModel(id, keys, result) {
+          if (!result) {
+            log(id + "：这次保存没有确认写入，面板上的值保持原样（原因见上面那行）。");
+            return;
+          }
+          var manifest = result.manifest || {};
+          if (manifest.error) {
+            log("【保存失败 · manifest】" + id + " 的 " + keys.join("、") + " 没写进 manifest：" + manifest.error + "（路径 " + (manifest.path || "—") + "）→ 宿主模型选择器不会看到这次改动。");
+          } else if (manifest.changed === true) {
+            log(id + "：已保存 " + keys.join("、") + "；" + (result.summary || "manifest 已更新") + " → manifest 已写入。注意：宿主 provider 行只在插件安装/启用或宿主启动时同步，开发热重载不会刷新它 —— 要让模型选择器看到这次改动，请到插件页把本插件停用再启用（或重启 PI-Desktop）。旧 manifest 备份：" + (manifest.backup || "—"));
+          } else {
+            log(id + "：已保存 " + keys.join("、") + "；" + (result.summary || "manifest 不用改"));
+          }
+          var applied = result.applied && typeof result.applied === "object" ? Object.keys(result.applied) : [];
+          var dropped = keys.filter(function (key) { return applied.indexOf(key) < 0; });
+          if (dropped.length > 0) log("【注意】" + id + " 的 " + dropped.join("、") + " 被服务端忽略了（值不合法或超出允许范围），没有写进 manifest。");
+          if (Array.isArray(result.models) && result.models.length > 0 && state.status) {
+            state.status.models = result.models;
+            renderStatus();
+          }
+        }
+
+        /* --------------------------------- 用量 --------------------------------- */
+
+        var USAGE_CELLS = [
+          function (row) { return { text: row.key || "(unknown)", className: "mono" }; },
+          function (row) { return { text: count(row.requests) }; },
+          function (row) { return { text: count(row.failures), className: row.failures > 0 ? "bad-text" : "" }; },
+          function (row) { return { text: count(row.promptTokens) }; },
+          function (row) { return { text: count(row.completionTokens) }; },
+          function (row) { return { text: count(row.totalTokens) }; },
+          function (row) { return { text: money(row) }; },
+          function (row) { return { text: count(row.avgMs) + " ms" }; },
+        ];
+
+        var RECENT_CELLS = [
+          function (row) { return { text: localTime(row.ts) }; },
+          function (row) { return { text: row.model || "—", className: "mono" }; },
+          function (row) { return { text: row.upstream || "—" }; },
+          function (row) { return { text: row.account || "—" }; },
+          function (row) { return { text: row.status === undefined ? "—" : String(row.status), className: row.status === 200 ? "" : "bad-text" }; },
+          function (row) { return { text: count(row.ms) + " ms" }; },
+          function (row) { return { text: count(row.totalTokens) }; },
+          function (row) { return { text: money(row) }; },
+          function (row) { return { text: row.note || "" }; },
+        ];
+
+        function fillTable(bodyId, rows, cells) {
+          var body = document.getElementById(bodyId);
+          if (!body) return;
+          body.textContent = "";
+          if (!rows || rows.length === 0) {
+            var emptyRow = document.createElement("tr");
+            var emptyCell = node("td", "hint", "没有数据");
+            emptyCell.colSpan = cells.length;
+            emptyRow.appendChild(emptyCell);
+            body.appendChild(emptyRow);
+            return;
+          }
+          rows.forEach(function (row) {
+            var tr = document.createElement("tr");
+            cells.forEach(function (build) {
+              var shape = build(row);
+              var td = document.createElement("td");
+              td.textContent = shape.text;
+              if (shape.className) td.className = shape.className;
+              tr.appendChild(td);
+            });
+            body.appendChild(tr);
+          });
+        }
+
+        function renderUsage(result) {
+          if (!result) return;
+          var totals = result.totals || {};
+          var stats = document.getElementById("usage-totals");
+          stats.textContent = "";
+          [
+            ["请求数", count(totals.requests)],
+            ["失败", count(totals.failures)],
+            ["输入 tokens", count(totals.promptTokens)],
+            ["输出 tokens", count(totals.completionTokens)],
+            ["总 tokens", count(totals.tokens)],
+            ["成本", money(totals)],
+            ["有成本记录", String(totals.costKnown || "—")],
+            ["平均耗时", count(totals.avgMs) + " ms"],
+          ].forEach(function (pair) {
+            var box = node("div", "stat");
+            box.appendChild(node("div", "stat-key", pair[0]));
+            box.appendChild(node("div", "stat-value", pair[1]));
+            stats.appendChild(box);
+          });
+          fillTable("usage-model-body", result.byModel, USAGE_CELLS);
+          fillTable("usage-upstream-body", result.byUpstream, USAGE_CELLS);
+          fillTable("usage-day-body", result.byDay, USAGE_CELLS);
+          fillTable("usage-recent-body", result.recent, RECENT_CELLS);
+          var window = result.window || {};
+          document.getElementById("usage-hint").textContent =
+            "账本 " + (result.file || "—") + " · 范围 " + (window.days > 0 ? "最近 " + window.days + " 天" : "全部") +
+            " · 窗口内 " + count(result.rowsInWindow) + " 条 / 共 " + count(result.rows) + " 条" +
+            (result.skipped > 0 ? " · 有 " + result.skipped + " 行读不出来，已跳过" : "");
+        }
+
+        function loadUsage() {
+          var label = "正在读取用量";
+          if (!beginBusy(label, document.getElementById("usage-refresh"))) return Promise.resolve(null);
+          var started = Date.now();
+          var picked = Number(document.getElementById("usage-days").value);
+          // The gateway answers with its own window (7 days for a value it cannot
+          // use), so the log quotes what the server actually returned.
+          var days = Number.isFinite(picked) ? Math.max(0, picked) : 7;
+          return release(run({ action: "usage", days: days, limit: 100 }, 25000, true)).then(function (result) {
+            if (!result || result.ok === false) {
+              log(label + "：失败，按钮已恢复。");
+              return null;
+            }
+            renderUsage(result);
+            var window = result.window || {};
+            var windowDays = Number.isFinite(Number(window.days)) ? Number(window.days) : days;
+            log(label + "：完成（" + (windowDays > 0 ? "最近 " + windowDays + " 天" : "全部") + "），用时 " + since(started) + " 秒。");
+            return result;
+          });
+        }
+
+        function clearUsage() {
+          if (!window.confirm("清空用量账本？账本文件里的 tokens 与成本记录会被永久删除（网关正在处理的请求不受影响）。")) return;
+          if (!window.confirm("再确认一次：删除后无法恢复，也没有导出功能。确定清空？")) return;
+          if (!beginBusy("正在清空用量账本", document.getElementById("usage-clear"))) return;
+          release(run({ action: "usageClear" }, 20000)).then(function (result) {
+            if (!result) return;
+            log("用量账本已清空：删除 " + (typeof result.removed === "number" ? result.removed + " 个文件" : "文件数未知") + "。");
+            loadUsage();
+          });
+        }
+        /* ------------------------------- 官方额度 ------------------------------- */
+        /* Cline 官方按账号返回的额度窗口（GET /users/me/plan/usage-limits）。读法与
+           DSH 原版 dsh-cline-pass 的 UsageCard 一致：显示「已用」百分比，条长=已用
+           并按已用分档上色（≥90 红、≥70 橙、其余绿），账号池一次只看一个账号
+           （‹ › 翻页）；读不到只说一句灰字，不标红。窗口名只认识这三个，多出来的
+           按上游自己的 type 显示，顺序也照这张表。 */
+        var QUOTA_WINDOWS = [["five_hour", "5 小时"], ["weekly", "本周"], ["monthly", "本月"]];
+
+        /** 认识的窗口用本文件的中文名；其余优先用上游给的 label，最后退回 type。 */
+        function quotaWindowName(limit) {
+          var source = limit || {};
+          var type = String(source.type || "");
+          var name = "";
+          QUOTA_WINDOWS.forEach(function (pair) {
+            if (pair[0] === type) name = pair[1];
+          });
+          if (name !== "") return name;
+          var label = typeof source.label === "string" ? source.label.trim() : "";
+          if (label !== "") return label;
+          return type !== "" ? type : "额度";
+        }
+
+        /**
+         * 认识的窗口按表里的顺序在前，其余按上游给的顺序跟在后面。
+         *
+         * 同一个 type 出现多次时，认识的那三种只留**最后一条** —— 原版是先建
+         * `new Map(type -> limit)` 再按表过滤，重复项后者覆盖前者；不认识的类型
+         * 原版原样列出，这里也一样。
+         */
+        function quotaWindows(limits) {
+          var list = limits || [];
+          var known = {};
+          QUOTA_WINDOWS.forEach(function (pair) {
+            list.forEach(function (limit) {
+              if (String((limit || {}).type) === pair[0]) known[pair[0]] = limit;
+            });
+          });
+          var rows = [];
+          QUOTA_WINDOWS.forEach(function (pair) {
+            if (known[pair[0]] !== undefined) rows.push(known[pair[0]]);
+          });
+          list.forEach(function (limit) {
+            var heard = QUOTA_WINDOWS.some(function (pair) { return String((limit || {}).type) === pair[0]; });
+            if (!heard) rows.push(limit);
+          });
+          return rows;
+        }
+
+        /**
+         * 已用百分比（夹到 0..100，**不取整**）；官方没给这一档就是 null。
+         *
+         * 不取整是照原版来的：原版只用它夹取，条长和配色都用原始小数，只有显示出来
+         * 的文字才 `Math.round`。所以 89.6% 是橙条配「90%」，不是红条。
+         */
+        function quotaUsed(limit) {
+          var value = (limit || {}).percentUsed;
+          // `null` 和 `""` 是「官方没给」，不是 0：`Number(null)` 就是 0，先判空
+          // 再转换，否则缺百分比会被画成「已用 0%」。
+          if (value === null || value === undefined || value === "") return null;
+          var number = Number(value);
+          if (!Number.isFinite(number)) return null;
+          return Math.max(0, Math.min(100, number));
+        }
+
+        /**
+         * 三档配色：按「已用」分档，阈值与原版 usageColor 一致。
+         * 百分比只有接近上限才值得报警，所以平常那一档留绿，红只给快用完的窗口。
+         */
+        function quotaTone(limit) {
+          var used = quotaUsed(limit);
+          if (used === null) return "";
+          if (used >= 90) return "bad";
+          if (used >= 70) return "warn";
+          return "good";
+        }
+
+        /**
+         * 「3 天 23 小时后重置」里的那一段。
+         *
+         * 按原版从 resetsAt 现算，不认上游算好的文本（省得两边对不上）：粗到分钟
+         * 就够 —— 额度重置是瞥一眼的信息。
+         */
+        function quotaCountdown(limit) {
+          var at = Date.parse(String((limit || {}).resetsAt || ""));
+          if (!Number.isFinite(at)) return "";
+          var minutes = Math.round((at - Date.now()) / 60000);
+          if (minutes <= 0) return "";
+          var days = Math.floor(minutes / 1440);
+          var hours = Math.floor((minutes % 1440) / 60);
+          var mins = minutes % 60;
+          if (days > 0) return days + " 天 " + hours + " 小时";
+          if (hours > 0) return hours + " 小时 " + mins + " 分钟";
+          return Math.max(1, mins) + " 分钟";
+        }
+
+        /** 一个额度窗口：名字 + 已用百分比 + 进度条（条长=已用）+ 重置倒计时。 */
+        function quotaWindowRow(limit) {
+          var source = limit || {};
+          var used = quotaUsed(source);
+          var known = used !== null;
+          // 条长与配色用原始值，显示文字与 aria 用取整后的整数（原版也是这么分的）。
+          var percent = known ? used : 0;
+          var shown = known ? Math.round(percent) : 0;
+          var tone = quotaTone(source);
+          var box = node("div", "quota-item");
+          var name = quotaWindowName(source);
+
+          var head = node("div", "quota-head");
+          head.appendChild(node("span", "quota-label", name));
+          head.appendChild(node("span", "quota-value", known ? shown + "%" : "—"));
+          box.appendChild(head);
+
+          var track = node("div", "quota-track");
+          track.setAttribute("role", "progressbar");
+          track.setAttribute("aria-label", name + "已用额度");
+          track.setAttribute("aria-valuemin", "0");
+          track.setAttribute("aria-valuemax", "100");
+          if (known) track.setAttribute("aria-valuenow", String(shown));
+          track.title = known ? "已用 " + shown + "%" : "官方没有返回这一档的百分比";
+          var fill = node("div", "quota-fill" + (tone === "warn" ? " warn" : tone === "bad" ? " bad" : ""));
+          fill.style.width = percent + "%";
+          track.appendChild(fill);
+          box.appendChild(track);
+
+          var countdown = quotaCountdown(source);
+          if (countdown !== "") box.appendChild(node("div", "quota-note", countdown + "后重置"));
+          return box;
+        }
+
+        /**
+         * 这张卡只列「插件读得到密钥」的账号。
+         *
+         * 模型设置页里那把密钥是个 host 账号：它只活在当次请求的内存里 —— 面板这座桥
+         * 拿不到它，所以它的额度永远读不出来（不是 0%，是根本没有数字）。「账号池」
+         * 那张表已经不列它了，这里跟着一致：与其列一行永远读不到的账号，不如不列。
+         */
+        function quotaAccounts() {
+          var all = (state.quota && state.quota.accounts) || [];
+          return all.filter(function (account) {
+            return account && account.source !== "host";
+          });
+        }
+
+        /** 这次读回来的结果里有几个 host 行：列表为空时用来把话说准。 */
+        function quotaHiddenHosts() {
+          var all = (state.quota && state.quota.accounts) || [];
+          return all.filter(function (account) {
+            return account && account.source === "host";
+          }).length;
+        }
+
+        /**
+         * 读不到的原因压成一句短中文，原文挂到 title 上。
+         *
+         * 网关和上游的消息都是英文，整段摊在卡片上既占地方也读不懂；但原文也不能丢 ——
+         * 「HTTP 401」这种能拿去查的线索，鼠标停一下就看得到。
+         */
+        function quotaErrorText(account) {
+          var raw = String((account && account.error) || "");
+          if (raw === "") return "";
+          if (raw.indexOf("no key") >= 0) return "这个账号现在没有密钥。";
+          var http = raw.match(/HTTP \d{3}/);
+          if (http) {
+            if (http[0] === "HTTP 401" || http[0] === "HTTP 403") return "密钥被官方拒绝了（" + http[0] + "）。";
+            if (http[0] === "HTTP 429") return "官方限流了（" + http[0] + "）。";
+            return "官方接口返回 " + http[0] + "。";
+          }
+          if (/abort|timed out|timeout|ETIMEDOUT/i.test(raw)) return "连官方接口超时。";
+          if (/fetch failed|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|socket/i.test(raw)) return "连不上官方接口。";
+          return "官方接口没有回应。";
+        }
+
+        /** 换一个账号：一次读取已经把整个池读回来了，翻页纯本地，不再发请求。 */
+        function stepQuota(delta) {
+          var accounts = quotaAccounts();
+          if (accounts.length === 0) return;
+          var at = Math.min(Math.max(Number(state.quotaPicked) || 0, 0), accounts.length - 1);
+          state.quotaPicked = (accounts.length + at + delta) % accounts.length;
+          renderQuota();
+        }
+
+        /**
+         * 一个账号：账号池里先给一行翻页（‹ 名字 当前 第 i / n 个 ›），然后是它的窗口。
+         * 只有一个账号时不给翻页 —— 两个按不出结果的按钮没有意义。
+         */
+        function quotaAccountBlock(account, at, total) {
+          var source = account || {};
+          var box = node("div", "quota-account");
+
+          if (total > 1) {
+            var pager = node("div", "quota-pager");
+            var prev = node("button", "quota-nav", "‹");
+            prev.title = "上一个账号";
+            prev.setAttribute("aria-label", "上一个账号");
+            prev.onclick = function () { stepQuota(-1); };
+
+            var who = node("div", "quota-who");
+            var label = source.displayName || source.name || "(未命名账号)";
+            var nameNode = node("span", "quota-acct", label);
+            nameNode.title = label;
+            who.appendChild(nameNode);
+            // 掩码跟在名字后面（「账号池」也有这一列）：两行填了同一个 key 时
+            // 一眼就能看出来，不必去比对数字。
+            if (source.keyHint) who.appendChild(node("span", "quota-key", String(source.keyHint)));
+            var mode = (state.status && state.status.accountMode) || "";
+            var active = (state.status && state.status.activeAccount) || "";
+            // 只有单选模式才有「当前」：轮询模式下每个请求都在换，标了就是假话。
+            // 单选但没指定账号时，网关的账号池会落到第一个可用账号，所以第一行就是
+            // 「当前」—— 原版也是在面板层把空值这样解析掉的。
+            var pinned = mode !== "roundrobin" && (active !== "" ? source.name === active : at === 0);
+            if (pinned) {
+              who.appendChild(node("span", "quota-active", "当前"));
+            }
+            who.appendChild(node("span", "quota-pos", "第 " + (at + 1) + " / " + total + " 个"));
+
+            var next = node("button", "quota-nav", "›");
+            next.title = "下一个账号";
+            next.setAttribute("aria-label", "下一个账号");
+            next.onclick = function () { stepQuota(1); };
+
+            pager.appendChild(prev);
+            pager.appendChild(who);
+            pager.appendChild(next);
+            box.appendChild(pager);
+          }
+
+          if (source.ok !== true) {
+            // 读不到的账号只说一句灰字：短中文在行内，原文进 title —— 既不标红，
+            // 也不假装 0%，更不把一长串英文摊在卡片上。
+            var note = node("div", "quota-muted", "暂时读不到官方额度。" + quotaErrorText(source));
+            var raw = String(source.error || "");
+            if (raw !== "") note.title = raw;
+            box.appendChild(note);
+            return box;
+          }
+          var rows = quotaWindows(source.limits);
+          if (rows.length === 0) {
+            box.appendChild(node("div", "quota-muted", "官方未返回额度窗口。"));
+            return box;
+          }
+          var bars = node("div", "quota-bars");
+          rows.forEach(function (limit) { bars.appendChild(quotaWindowRow(limit)); });
+          box.appendChild(bars);
+          return box;
+        }
+
+        /**
+         * 画这张卡：标题就是原版那两行 —— 账号池「官方额度 · N 个账号」，单账号
+         * 「官方额度 · 账号 <名字>」。刷新按钮在卡片标题行里，所以读不到时不必再给
+         * 一个「重试」。账号数只数列表里列出来的账号（host 不列，见 quotaAccounts）。
+         */
+        function renderQuota() {
+          var body = document.getElementById("quota-body");
+          if (!body) return;
+          var title = document.getElementById("quota-title");
+          var quota = state.quota;
+          var accounts = quotaAccounts();
+          var fetched = !!(quota && Number(quota.fetchedAt) > 0);
+          while (body.firstChild) body.removeChild(body.firstChild);
+
+          if (title) {
+            if (accounts.length > 1) title.textContent = "官方额度 · " + accounts.length + " 个账号";
+            // 单账号时原版用的是账号 id（配置里的名字），只有翻页行才用 displayName。
+            else if (accounts.length === 1) title.textContent = "官方额度 · 账号 " + (accounts[0].name || "—");
+            else title.textContent = "官方额度";
+          }
+
+          if (!fetched) {
+            // 只有真的在读取时才说「正在读取」：切页签时那次自动读取会被全局忙碌锁
+            // 挡掉（`loadQuota` 直接 return，什么都不置），那种情况得说实话，不能挂
+            // 一个永远转不完的 loading。
+            var why = "点标题行右边的「刷新」读取官方额度。";
+            if (state.quotaPending) why = "正在读取官方额度…";
+            else if (state.quotaFailed) why = "暂时读不到官方额度。";
+            body.appendChild(node("div", "quota-muted", why));
+            return;
+          }
+          if (state.quotaFailed) {
+            body.appendChild(node("div", "quota-muted", "暂时读不到官方额度。下面是上一次读到的结果，可能已经过期。"));
+          }
+          if (accounts.length === 0) {
+            // 列表是空的时候把话说准：只有 host（模型设置页那把）不是「没有账号」，
+            // 而是那把密钥插件读不到。
+            var none =
+              quotaHiddenHosts() > 0
+                ? "官方额度只认插件读得到密钥的账号：模型设置页那把密钥（host）只活在请求内存里，读不到，所以这里没得查。到「账号池」添加一个 Cline API Key，再点「刷新」。"
+                : "还没有内联账号：先到「账号池」添加一个 Cline API Key，再点「刷新」。";
+            body.appendChild(node("div", "quota-muted", none));
+            return;
+          }
+          var index = Math.min(Math.max(Number(state.quotaPicked) || 0, 0), accounts.length - 1);
+          state.quotaPicked = index;
+          // 同一个 key 填在两个账号上时，两边读到的是同一个 Cline 账号的额度：
+          // 这条说明是为了让「名字对、数字对不上」不至于变成一个谜。
+          if (accounts[index].duplicate === true) {
+            body.appendChild(node("div", "quota-muted", "这个账号和另一个账号用的是同一个 key（同一个 Cline 账号），所以两边数字一样 —— 到「账号池」把 key 改成各自的。"));
+          }
+          body.appendChild(quotaAccountBlock(accounts[index], index, accounts.length));
+        }
+
+        /**
+         * 读一次官方额度。`force` 是「刷新额度」按钮：带 `refresh: true` 让网关绕过
+         * 它那 60 秒缓存；进入用量页时的自动读取不带，允许直接吃缓存。
+         *
+         * 两种调用都走 beginBusy/release：锁同步拿到，任何终局（成功、失败、超时）
+         * 都还按钮并写一行日志。
+         */
+        function loadQuota(force) {
+          var label = force ? "正在刷新官方额度" : "正在读取官方额度";
+          if (!beginBusy(label, document.getElementById("quota-refresh"))) return Promise.resolve(null);
+          var started = Date.now();
+          var payload = { action: "quota" };
+          if (force) payload.refresh = true;
+          state.quotaPending = true;
+          renderQuota();
+          return release(run(payload, 25000, true)).then(function (result) {
+            state.quotaPending = false;
+            if (!result || result.ok === false) {
+              state.quotaFailed = true;
+              renderQuota();
+              log(label + "：读不到官方额度（" + ((result && result.error) || "没有回应") + "），按钮已恢复。");
+              return null;
+            }
+            state.quota = result;
+            state.quotaFailed = false;
+            renderQuota();
+            var listed = quotaAccounts().length;
+            var hidden = quotaHiddenHosts();
+            log(label + "：完成（" + listed + " 个账号" + (hidden > 0 ? "，另有 " + hidden + " 个 host 账号读不到、不列出" : "") + (result.cached ? "，网关缓存" : "") + "），用时 " + since(started) + " 秒。");
+            return result;
+          });
+        }
+
+        /* --------------------------------- actions ------------------------------ */
+
+        function run(payload, timeoutMs, quiet) {
+          return call(payload, timeoutMs)
+            .then(function (result) {
+              if (result && result.ok === false) {
+                log((payload.action || "操作") + " 返回失败：" + (result.error || "未知错误"));
+                return result;
+              }
+              if (!quiet) log((payload.action || "操作") + " 完成");
+              return result;
+            })
+            .catch(fail);
+        }
+
+        /** Read the whole panel state; used on first paint and after every action. */
+        function refresh() {
+          var label = "正在读取状态";
+          if (!beginBusy(label, document.getElementById("refresh"))) return Promise.resolve(null);
+          var started = Date.now();
+          return release(run({ action: "status" }, 20000, true)).then(function (result) {
+            if (!result || !result.status) {
+              log(label + "：失败，按钮已恢复（可再点右上角“刷新”）。");
+              return null;
+            }
+            state.status = result.status;
+            renderStatus();
+            log(label + "：完成，用时 " + since(started) + " 秒。");
+            return result;
+          });
+        }
+
+        function loadHistory() {
+          var label = "正在读取请求历史";
+          if (!beginBusy(label, document.getElementById("history-load"))) return Promise.resolve(null);
+          var started = Date.now();
+          var filter = document.getElementById("history-filter").value.trim();
+          return release(run({ action: "history", limit: 100, model: filter }, 20000, true)).then(function (result) {
+            if (!result || !result.rows) {
+              log(label + "：失败，按钮已恢复。");
+              return null;
+            }
+            state.history = result.rows;
+            renderHistory();
+            log(label + "：完成（" + result.rows.length + " 条），用时 " + since(started) + " 秒。");
+            return result;
+          });
+        }
+
+        /* --------------------------------- events ------------------------------- */
+
+        document.getElementById("tabs").addEventListener("click", function (event) {
+          var button = event.target.closest("button[data-tab]");
+          if (!button) return;
+          Array.prototype.forEach.call(document.querySelectorAll("#tabs button"), function (other) {
+            other.setAttribute("aria-selected", String(other === button));
+          });
+          ["accounts", "models", "history", "usage", "settings"].forEach(function (name) {
+            document.getElementById("tab-" + name).hidden = name !== button.dataset.tab;
+          });
+          if (button.dataset.tab === "history") loadHistory();
+          // One official read per visit, chained behind the ledger read so the
+          // panel keeps its one-call-at-a-time rule. No `refresh: true` here:
+          // the gateway's 60-second cache is exactly what a tab switch wants.
+          if (button.dataset.tab === "usage") loadUsage().then(function () { loadQuota(false); });
+        });
+
+        document.getElementById("model-select").addEventListener("change", function (event) {
+          state.model = event.target.value;
+          renderModel();
+          focusModelEntry(state.model);
+        });
+
+        document.getElementById("refresh").onclick = function () { refresh(); };
+        document.getElementById("restart").onclick = function () {
+          if (!beginBusy("正在重启网关", this)) return;
+          release(run({ action: "restartGateway" }, 25000)).then(function (result) {
+            if (result && result.status) {
+              state.status = result.status;
+              renderStatus();
+            }
+          });
+        };
+        document.getElementById("copy-provider").onclick = function () {
+          var button = this;
+          var status = state.status;
+          if (!status) {
+            log("还没有读到状态，等「正在读取状态」结束后再复制。");
+            return;
+          }
+          var text = status.providerBaseUrl;
+          function flash(message) {
+            log(message);
+            var original = button.textContent;
+            button.textContent = "已复制";
+            window.setTimeout(function () {
+              if (document.contains(button) && !busy.active) button.textContent = original;
+            }, 1200);
+          }
+          try {
+            navigator.clipboard.writeText(text).then(
+              function () { flash("已复制：" + text); },
+              function () { flash("provider 地址（剪贴板被拒绝，请手动选中）：" + text); },
+            );
+          } catch (error) {
+            flash("provider 地址：" + text);
+          }
+        };
+
+        /**
+         * Load one account into the form. Editing in place beats delete-and-re-add:
+         * the row keeps its position in the rotation, and a key you already have
+         * does not have to be retyped.
+         */
+        function startAccountEdit(account) {
+          state.accountEdit = account.name;
+          document.getElementById("account-form-title").textContent = "编辑账号 " + account.name;
+          document.getElementById("new-name").value = account.name;
+          document.getElementById("new-display").value = account.displayName || "";
+          var key = document.getElementById("new-key");
+          key.value = "";
+          key.placeholder = "留空 = 不改动现有密钥";
+          document.getElementById("cancel-edit").hidden = false;
+          document.getElementById("add-account").textContent = "保存";
+          log("编辑账号 " + account.name + "：改完点「保存」；key 留空就不动它。");
+        }
+
+        function resetAccountForm() {
+          state.accountEdit = "";
+          document.getElementById("account-form-title").textContent = "新增账号";
+          document.getElementById("new-name").value = "";
+          document.getElementById("new-display").value = "";
+          var key = document.getElementById("new-key");
+          key.value = "";
+          key.placeholder = "Cline API Key";
+          document.getElementById("cancel-edit").hidden = true;
+          document.getElementById("add-account").textContent = "添加";
+        }
+
+        document.getElementById("add-account").onclick = function () {
+          var name = document.getElementById("new-name").value.trim();
+          var displayName = document.getElementById("new-display").value.trim();
+          var key = document.getElementById("new-key").value;
+          var editing = String(state.accountEdit || "");
+          if (name === "") {
+            flash("先填一个账号名。");
+            return;
+          }
+          var payload = editing === ""
+            ? { action: "accounts", accountsAction: "add", name: name, displayName: displayName, key: key }
+            : { action: "accounts", accountsAction: "update", name: editing, renameTo: name, displayName: displayName, key: key };
+          if (!beginBusy(editing === "" ? "正在新增账号" : "正在保存账号 " + editing, this)) return;
+          release(run(payload, 20000)).then(function (result) {
+            if (result && result.ok) {
+              resetAccountForm();
+              refresh();
+            }
+          });
+        };
+        document.getElementById("cancel-edit").onclick = function () { resetAccountForm(); };
+        document.getElementById("save-mode").onclick = function () {
+          if (!beginBusy("正在保存账号模式", this)) return;
+          release(run({
+            action: "accounts",
+            accountsAction: "mode",
+            accountMode: document.getElementById("account-mode").value,
+            activeAccount: document.getElementById("active-account").value.trim(),
+          }, 20000)).then(refresh);
+        };
+        document.getElementById("reset-cooldowns").onclick = function () {
+          if (!beginBusy("正在复位账号池", this)) return;
+          release(run({ action: "accounts", accountsAction: "resetCooldowns" }, 20000)).then(refresh);
+        };
+
+        document.getElementById("probe").onclick = function () {
+          if (!beginBusy("正在探测通道", this)) return;
+          release(run({ action: "probe", model: state.model }, 25000)).then(refresh);
+        };
+        document.getElementById("validate").onclick = function () {
+          if (!beginBusy("正在校验通道", this)) return;
+          release(run({ action: "validate", model: state.model }, 25000)).then(refresh);
+        };
+        document.getElementById("test").onclick = function () {
+          if (!beginBusy("正在试跑一次", this)) return;
+          release(run({ action: "test", model: state.model }, 25000)).then(function (result) {
+            if (!result || !result.result) return;
+            document.getElementById("probe-result").textContent = JSON.stringify(result.result, null, 2);
+          });
+        };
+        document.getElementById("save-pin").onclick = function () {
+          var split = function (id) {
+            return document.getElementById(id).value.split(",").map(function (part) { return part.trim(); }).filter(Boolean);
+          };
+          if (!beginBusy("正在保存 pin", this)) return;
+          release(run({
+            action: "pin",
+            model: state.model,
+            upstreams: split("pin-upstreams"),
+            exclude: split("pin-exclude"),
+            pinMode: document.getElementById("pin-mode").value,
+            sort: document.getElementById("pin-sort").value,
+          }, 20000)).then(refresh);
+        };
+        document.getElementById("clear-pin").onclick = function () {
+          if (!beginBusy("正在清除 pin", this)) return;
+          release(run({ action: "clearPin", model: state.model }, 20000)).then(refresh);
+        };
+
+        document.getElementById("history-load").onclick = function () { loadHistory(); };
+        document.getElementById("save-settings").onclick = function () {
+          if (!beginBusy("正在保存网关设置", this)) return;
+          release(run({
+            action: "setConfig",
+            baseUrl: document.getElementById("set-baseurl").value.trim(),
+            requestTimeoutMs: Number(document.getElementById("set-request").value),
+            streamIdleTimeoutMs: Number(document.getElementById("set-idle").value),
+            probeTimeoutMs: Number(document.getElementById("set-probe").value),
+            maxConcurrentRequests: Number(document.getElementById("set-concurrency").value),
+          }, 20000)).then(refresh);
+        };
+        document.getElementById("reload-config").onclick = function () {
+          if (!beginBusy("正在重新读取配置", this)) return;
+          release(run({ action: "reloadConfig" }, 20000)).then(refresh);
+        };
+
+        document.getElementById("usage-refresh").onclick = function () { loadUsage(); };
+        document.getElementById("usage-clear").onclick = function () { clearUsage(); };
+        document.getElementById("usage-days").onchange = function () { loadUsage(); };
+
+        // The manual read must not answer from the gateway's cache.
+        document.getElementById("quota-refresh").onclick = function () { loadQuota(true); };
+
+        /* Keep the host's title-bar capsule readable by echoing the page colours. */
+        (function retint() {
+          var lastBackground = "";
+          var lastForeground = "";
+          function paintable(value) {
+            return value && value !== "transparent" && value !== "rgba(0, 0, 0, 0)";
+          }
+          function apply() {
+            var host = document.querySelector("pi-plugin-panel-chrome");
+            if (!host) return;
+            var bodyStyle = document.body ? getComputedStyle(document.body) : null;
+            var rootStyle = getComputedStyle(document.documentElement);
+            var background = bodyStyle && bodyStyle.backgroundColor;
+            var foreground = bodyStyle && bodyStyle.color;
+            if (!paintable(background)) background = rootStyle.backgroundColor;
+            if (!paintable(foreground)) foreground = rootStyle.color;
+            if (paintable(background) && background !== lastBackground) {
+              lastBackground = background;
+              host.style.setProperty("--pi-plugin-panel-page-background", background);
+            }
+            if (paintable(foreground) && foreground !== lastForeground) {
+              lastForeground = foreground;
+              host.style.setProperty("--pi-plugin-panel-page-foreground", foreground);
+            }
+          }
+          var scheduled = false;
+          function schedule() {
+            if (scheduled) return;
+            scheduled = true;
+            window.setTimeout(function () { scheduled = false; apply(); }, 0);
+          }
+          if (typeof MutationObserver !== "undefined") {
+            new MutationObserver(schedule).observe(document.documentElement, {
+              childList: true, subtree: true, attributes: true, attributeFilter: ["data-theme", "data-base", "style"],
+            });
+          }
+          schedule();
+        })();
+
+        /* Follow the host appearance once it answers, and cache it for next launch.
+           The host also pushes `appearance:changed`, so a theme switch lands without
+           a reload; setting data-theme re-runs the capsule retint above. */
+        (function followAppearance() {
+          if (!bridge || !bridge.invoke) return;
+          function applyAppearance(appearance) {
+            if (!appearance) return;
+            var base = window.__picp.resolveBase(appearance.base);
+            document.documentElement.dataset.theme = base;
+            try { window.localStorage.setItem(window.__picp.cacheKey, JSON.stringify({ base: appearance.base })); } catch (error) { /* ignore */ }
+            if (appearance.pluginThemeCss) {
+              var style = document.getElementById("pi-appearance-theme-css");
+              if (!style) {
+                style = document.createElement("style");
+                style.id = "pi-appearance-theme-css";
+                document.head.appendChild(style);
+              }
+              style.textContent = appearance.pluginThemeCss;
+            }
+          }
+          if (typeof bridge.on === "function") bridge.on("appearance:changed", applyAppearance);
+          bridge
+            .invoke("app.getAppearance")
+            .then(applyAppearance)
+            .catch(function () { /* keep the cached or OS palette */ });
+        })();
+
+        refresh();
+      })();
+    </script>
+  </body>
+</html>
