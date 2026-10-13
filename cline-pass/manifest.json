@@ -425,7 +425,8 @@
     "background.service",
     "agent.tool.register",
     "ui.panel",
-    "notify"
+    "notify",
+    "models.list"
   ],
   "engines": {
     "piDesktop": ">=0.1.0"

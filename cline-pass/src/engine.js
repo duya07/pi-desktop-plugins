@@ -206,7 +206,28 @@ function createEngine({ resolveAccount, store, logger = () => {}, attemptTimeout
         }
         if (frame?.usage) assembled.usage = frame.usage
         const routing = parseRouting(frame)
-        if (routing.finalProvider) assembled.provider = routing.finalProvider
+        // The two pipelines report their route in different places, and the
+        // difference is load-bearing: a bare root-level `provider` is what marks
+        // the *direct* pipeline, while the planner nests its route under
+        // `provider_metadata.gateway.routing`. This assembled body is what probe,
+        // validate and the panel read the pipeline from, so a planner frame's
+        // route is reproduced in its nested shape rather than flattened into the
+        // root - flattened, it reports the other pipeline as the one that served.
+        // The facts come from `parseRouting` itself, so the source stays single.
+        if (routing.pipeline === 'planner') {
+          assembled.provider_metadata = {
+            gateway: {
+              routing: {
+                finalProvider: routing.finalProvider,
+                ...(routing.canonicalSlug === null ? {} : { canonicalSlug: routing.canonicalSlug }),
+                ...(routing.fallbacks.length === 0 ? {} : { fallbacksAvailable: routing.fallbacks }),
+                ...(routing.plan === '' ? {} : { planningReasoning: routing.plan }),
+              },
+            },
+          }
+        } else if (routing.finalProvider) {
+          assembled.provider = routing.finalProvider
+        }
       }
     } catch (error) {
       if (!sawFrame) return null
@@ -216,6 +237,36 @@ function createEngine({ resolveAccount, store, logger = () => {}, attemptTimeout
       return { status: 502, ok: false, json: { error: { message: 'the upstream stream carried no content', type: 'upstream_error' } }, text: '' }
     }
     return { status: 200, ok: true, json: assembled, text: '' }
+  }
+
+  /**
+   * One non-streaming completion, with this endpoint's stream quirk handled.
+   *
+   * `api.cline.bot` refuses a non-streaming call while streaming the very same
+   * request happily, so the refusal is answered over the stream rather than
+   * reported as a failure the upstream does not really mean. Every caller that
+   * wants one JSON answer goes through here - probe, the account test and the
+   * diagnostic chain alike - because the quirk is a property of the endpoint,
+   * not of one code path.
+   *
+   * @returns `{ result, payload, failed, note }`, where `result` is shaped like
+   *   `sendJSON`'s and `note` records an assembled answer.
+   */
+  async function completionWithStreamFallback({ baseURL, apiKey, body, signal, timeoutMs = attemptTimeoutMs } = {}) {
+    let result = await chatCompletion({ baseURL, apiKey, body, signal, timeoutMs })
+    let payload = unwrapEnvelope(result.json)
+    let failed = result.ok !== true || (payload?.error !== undefined && payload?.choices === undefined)
+    let note = ''
+    if (failed && /empty response content/i.test(errorText(payload?.error) || result.text)) {
+      const collected = await collectCompletion({ baseURL, apiKey, body, signal, timeoutMs })
+      if (collected !== null && collected.ok === true) {
+        result = collected
+        payload = collected.json
+        failed = false
+        note = 'assembled from the upstream stream'
+      }
+    }
+    return { result, payload, failed, note }
   }
 
   /**
@@ -230,22 +281,13 @@ function createEngine({ resolveAccount, store, logger = () => {}, attemptTimeout
     const meta = store.metaOf(model)
     const pinned = injectPrefs(body, meta, attempt)
     const started = Date.now()
-    let result = await chatCompletion({ baseURL: account.baseURL, apiKey: account.key, body: pinned, signal, timeoutMs })
-    let payload = unwrapEnvelope(result.json)
-    let failed = result.ok !== true || (payload?.error !== undefined && payload?.choices === undefined)
-    let note = ''
-    // This endpoint refuses a non-streaming call while streaming the same
-    // request happily, so answer it over the stream rather than reporting a
-    // failure the upstream does not really mean.
-    if (failed && /empty response content/i.test(errorText(payload?.error) || result.text)) {
-      const collected = await collectCompletion({ baseURL: account.baseURL, apiKey: account.key, body: pinned, signal, timeoutMs })
-      if (collected !== null && collected.ok === true) {
-        result = collected
-        payload = collected.json
-        failed = false
-        note = 'assembled from the upstream stream'
-      }
-    }
+    const { result, payload, failed, note } = await completionWithStreamFallback({
+      baseURL: account.baseURL,
+      apiKey: account.key,
+      body: pinned,
+      signal,
+      timeoutMs,
+    })
     const routing = failed ? {} : parseRouting(payload)
     return {
       attempt,
@@ -331,17 +373,21 @@ function createEngine({ resolveAccount, store, logger = () => {}, attemptTimeout
   async function probe(model, { signal, timeoutMs = attemptTimeoutMs } = {}) {
     const account = await resolveAccount()
     const started = Date.now()
-    const result = await chatCompletion({
+    const { result, payload, failed, note } = await completionWithStreamFallback({
       baseURL: account.baseURL,
       apiKey: account.key,
       body: { model, messages: [{ role: 'user', content: 'Reply with the word OK' }], max_tokens: 256 },
       signal,
       timeoutMs,
     })
-    const payload = unwrapEnvelope(result.json)
     const ms = Date.now() - started
-    if (payload?.error !== undefined && payload?.choices === undefined) {
-      const message = errorText(payload.error)
+    if (failed) {
+      // A refusal does not have to carry an `error` object: a proxy can answer a
+      // bodyless 500, or a JSON body whose only key is `detail`. The reason is
+      // read from wherever it actually is, and is never left empty - nor may the
+      // read itself throw, because `failed` also covers a transport that came
+      // back with nothing to parse.
+      const message = errorText(payload?.error) || result.text.slice(0, 200) || `HTTP ${result.status}`
       store.learn(model, { ok: false, lastError: message, lastMs: ms })
       return { ok: false, ms, model, error: message }
     }
@@ -382,7 +428,7 @@ function createEngine({ resolveAccount, store, logger = () => {}, attemptTimeout
       probedAt: Date.now(),
       lastError: '',
     })
-    logger('probe complete', { model, pipeline, upstreams: upstreams.length, ms })
+    logger('probe complete', { model, pipeline, upstreams: upstreams.length, ms, ...(note === '' ? {} : { note }) })
     return {
       ok: true,
       ms,
@@ -470,16 +516,26 @@ function createEngine({ resolveAccount, store, logger = () => {}, attemptTimeout
   async function testAccount({ key, baseURL, model, signal, timeoutMs = probeTimeoutMs }) {
     const target = model ?? 'cline-pass/deepseek-v4.1-flash'
     try {
-      const result = await chatCompletion({
+      // The panel's 测试 button is the one place a false red mark is expensive:
+      // the account is fine, the upstream just will not answer a non-streaming
+      // call, so it goes through the same fallback every other JSON caller uses.
+      const { result, payload, failed } = await completionWithStreamFallback({
         baseURL,
         apiKey: key,
         body: { model: target, messages: [{ role: 'user', content: 'hi' }], max_tokens: 16 },
         signal,
         timeoutMs,
       })
-      const payload = unwrapEnvelope(result.json)
-      const failed = result.ok !== true || (payload?.error !== undefined && payload?.choices === undefined)
-      return { ok: !failed, status: result.status, model: target, error: failed ? errorText(payload?.error) || result.text.slice(0, 200) : '' }
+      return {
+        ok: !failed,
+        status: result.status,
+        model: target,
+        // A refusal can arrive with no body at all (a proxy 500/502 in front of
+        // the gateway), which leaves neither an `error` object nor text to show.
+        // The status is then the only reason there is, and an empty string would
+        // reach the panel as a failed test with nothing to act on.
+        error: failed ? errorText(payload?.error) || result.text.slice(0, 200) || `HTTP ${result.status}` : '',
+      }
     } catch (error) {
       return { ok: false, status: 0, model: target, error: error instanceof Error ? error.message : String(error) }
     }

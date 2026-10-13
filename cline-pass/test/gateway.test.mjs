@@ -38,7 +38,15 @@ const CHANNELS = ['alpha', 'beta']
  * real gateway answers a harvest with.
  */
 function startMockUpstream() {
-  const state = { requests: [], forKey: new Map(), jsonRefused: false, quotaMode: 'ok', quotaCalls: 0, quotaKeys: [] }
+  const state = { requests: [], forKey: new Map(), jsonRefused: false, refuseShape: 'content', streamRouting: '', quotaMode: 'ok', quotaCalls: 0, quotaKeys: [] }
+  // `jsonRefused` is the real-world quirk: a non-streaming call is refused while
+  // the identical request streams fine. `refuseShape` picks what that refusal
+  // looks like - `'content'` is api.cline.bot's own body, `'empty'` a bodyless
+  // 500 (what a proxy's error page leaves behind) and `'detail'` a 502 whose
+  // JSON carries no `error` key at all. `streamRouting` picks which pipeline the
+  // stream frames imitate: `''` keeps the frame-root `provider_metadata`,
+  // `'planner'` nests the route under `choices[0].delta.provider_metadata`, and
+  // `'direct'` puts a bare root-level `provider` on the frame.
   const server = http.createServer((req, res) => {
     if (req.url.includes('/users/me/plan/usage-limits')) {
       state.quotaCalls += 1
@@ -118,6 +126,16 @@ function startMockUpstream() {
       // HTTP 500 {"error":"empty response content"} while streaming the same
       // request perfectly, so the gateway has to assemble JSON from the stream.
       if (state.jsonRefused && body.stream !== true) {
+        if (state.refuseShape === 'empty') {
+          res.writeHead(500, { 'content-type': 'application/json' })
+          res.end()
+          return
+        }
+        if (state.refuseShape === 'detail') {
+          res.writeHead(502, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ detail: 'upstream down' }))
+          return
+        }
         res.writeHead(500, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: 'empty response content', success: false }))
         return
@@ -127,13 +145,32 @@ function startMockUpstream() {
         if (state.jsonRefused) {
           res.write(`data: ${JSON.stringify({ id: 'chunk-0', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { reasoning: 'think' } }] })}\n\n`)
         }
+        // Where a frame reports its route depends on the pipeline, and the two
+        // spellings are not interchangeable: the planner nests it under the
+        // delta, while the direct pipeline puts a bare `provider` on the frame.
+        const route =
+          state.streamRouting === 'planner'
+            ? {
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      role: 'assistant',
+                      content: 'Hello',
+                      provider_metadata: { gateway: { routing: { finalProvider: 'openrouter', canonicalSlug: 'openrouter/anthropic/claude-sonnet-4.5' } } },
+                    },
+                  },
+                ],
+              }
+            : state.streamRouting === 'direct'
+              ? { choices: [{ index: 0, delta: { role: 'assistant', content: 'Hello' } }], provider: 'deepseek' }
+              : { choices: [{ index: 0, delta: { role: 'assistant', content: 'Hello' } }], provider_metadata: { gateway: { routing: { finalProvider: served } } } }
         res.write(
           `data: ${JSON.stringify({
             id: 'chunk-1',
             object: 'chat.completion.chunk',
             model: body.model,
-            choices: [{ index: 0, delta: { role: 'assistant', content: 'Hello' } }],
-            provider_metadata: { gateway: { routing: { finalProvider: served } } },
+            ...route,
           })}\n\n`,
         )
         res.write(
@@ -647,6 +684,118 @@ test('a non-streaming call is assembled from the stream when the upstream refuse
     assert.equal(row.status, 200)
   } finally {
     mock.state.jsonRefused = false
+  }
+})
+
+test("the panel's account test survives the upstream's JSON refusal", async () => {
+  // The 测试 button and the probe go out over the same non-streaming path as
+  // everything else, so they hit the same wall: HTTP 500 "empty response
+  // content" for a request that streams perfectly. A false red mark on the
+  // account row is worse than no button at all - the key is fine, the upstream
+  // just will not answer this way.
+  mock.state.jsonRefused = true
+  mock.state.forKey.clear()
+  try {
+    const result = await gateway.ops.accounts({ action: 'test', name: 'a1' })
+    assert.equal(result.ok, true, `the account test failed: ${result.error}`)
+    assert.equal(result.status, 200)
+    assert.equal(result.model, MODEL)
+    assert.equal(result.error, '')
+  } finally {
+    mock.state.jsonRefused = false
+  }
+})
+
+test("the panel's account test says why when the refusal has no body", async () => {
+  // The same wall as above in a worse shape: the refusal carries no body at all,
+  // so there is no `error` object to read and no text to show. The row still has
+  // to explain itself - a failure with an empty reason is not a diagnosis.
+  mock.state.jsonRefused = true
+  mock.state.refuseShape = 'empty'
+  mock.state.forKey.clear()
+  try {
+    const result = await gateway.ops.accounts({ action: 'test', name: 'a1' })
+    assert.equal(result.ok, false)
+    assert.equal(result.status, 500)
+    assert.equal(result.error, 'HTTP 500')
+  } finally {
+    mock.state.jsonRefused = false
+    mock.state.refuseShape = 'content'
+  }
+})
+
+/* ----------------------------- probe under the quirk ----------------------------- */
+
+/** A model no other case probes, so these verdicts cannot leak into them. */
+const PROBE_MODEL = 'cline-pass/deepseek-v4-pro'
+
+test('probe keeps the planner pipeline when the answer was assembled from the stream', async () => {
+  // api.cline.bot refuses every non-streaming call, so a probe on the real box
+  // always reads an assembled body - and its pipeline verdict comes from that
+  // body. The planner reports its route nested under `provider_metadata`, while
+  // a bare root-level `provider` is the *direct* pipeline's own marker, so
+  // flattening the planner's route into the root reports the wrong pipeline.
+  mock.state.jsonRefused = true
+  mock.state.streamRouting = 'planner'
+  mock.state.forKey.clear()
+  try {
+    const result = await gateway.ops.probe({ model: PROBE_MODEL })
+    assert.equal(result.ok, true, result.error)
+    assert.equal(result.pipeline, 'planner')
+    // The channel that served the probe comes back as `lastProvider`: probe has
+    // no `finalProvider` field of its own.
+    assert.equal(result.lastProvider, 'openrouter')
+    assert.equal(result.canonicalSlug, 'openrouter/anthropic/claude-sonnet-4.5')
+    assert.ok(result.upstreams.includes('openrouter'), `upstreams=${result.upstreams.join(',')}`)
+  } finally {
+    mock.state.jsonRefused = false
+    mock.state.streamRouting = ''
+  }
+})
+
+test('probe reads the direct pipeline from a bare provider on the stream', async () => {
+  mock.state.jsonRefused = true
+  mock.state.streamRouting = 'direct'
+  mock.state.forKey.clear()
+  try {
+    const result = await gateway.ops.probe({ model: PROBE_MODEL })
+    assert.equal(result.ok, true, result.error)
+    assert.equal(result.pipeline, 'direct')
+    assert.equal(result.lastProvider, 'deepseek')
+  } finally {
+    mock.state.jsonRefused = false
+    mock.state.streamRouting = ''
+  }
+})
+
+test('probe reports a bodyless refusal instead of throwing on it', async () => {
+  // A proxy in front of the gateway answers 500 with no body at all, so the
+  // failure carries no `error` object either: reading into it threw a TypeError,
+  // which reached the panel as a failed probe with nothing to act on.
+  mock.state.jsonRefused = true
+  mock.state.refuseShape = 'empty'
+  mock.state.forKey.clear()
+  try {
+    const result = await gateway.ops.probe({ model: PROBE_MODEL })
+    assert.equal(result.ok, false)
+    assert.equal(result.error, 'HTTP 500')
+  } finally {
+    mock.state.jsonRefused = false
+    mock.state.refuseShape = 'content'
+  }
+})
+
+test('probe reports a refusal whose JSON has no error key', async () => {
+  mock.state.jsonRefused = true
+  mock.state.refuseShape = 'detail'
+  mock.state.forKey.clear()
+  try {
+    const result = await gateway.ops.probe({ model: PROBE_MODEL })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /upstream down/, 'the body itself is the only reason there is')
+  } finally {
+    mock.state.jsonRefused = false
+    mock.state.refuseShape = 'content'
   }
 })
 

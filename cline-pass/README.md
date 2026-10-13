@@ -172,6 +172,7 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 宿主的面板桥只转发 `skill.*` 通道，所以面板统一走 `skill.setEnabled` + `payload.action`（与官方 `pi.todo` 同形）：
 `status` `probe` `validate` `test` `pin` `clearPin` `accounts` `history` `setConfig` `reloadConfig` `restartGateway`
 `setModel`（写模型参数并重写 manifest）`usage` `usageClear` `quota`。
+`status` 除网关状态外还带 `host`（宿主清单比对结果，即「宿主侧同步状态」那一行的原始数据，见下文第 24 条）。
 宿主对**一次面板调用**只等 30 秒（`PLUGIN_PANEL_TIMEOUT_MS`），所以面板侧的超时是 25 秒；probe/validate/test 这类
 重活给的是同一预算，超时会说清原因并建议改用 agent 工具（110 秒）。插件进程抛错时宿主可能不回传异常，面板因此自带超时与错误提示。
 
@@ -193,6 +194,7 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 | 模型选择器只列 `enabled && (hasSecret \|\| authKind === "none")` 的 provider（`SettingsPage` / `ComposerPermissionPicker` 的 `be()`） | provider 声明 `authKind: "none"`：key 全在插件自己的 `config.json` 里，声明 `api_key` 会让整条 provider 从选择器消失 |
 | 插件模型的 manifest 字段只有 7 个会被 host-core 落库：`id` / `name`(→`alias`) / `contextWindow` / `maxTokens` / `supportsImages` / `thinkingLevels` / `defaultThinkingLevel` | 面板模型卡只给这 7 个开关；`thinkingProtocol` / `supportsDocuments` / `availableForSubagents` / `nativeWebSearch` / 来源标记 / 生图这些宿主专有字段只作只读说明，不给假开关 |
 | 插件 provider 行只在宿主启动 / 插件安装 / 启用时写一次（host-core 的 `providers.rs`），开发热重载**不**刷新 | 面板写明「改完注册范围请把本插件停用再启用」，不假装保存即生效 |
+| `pi.models.list()` 需要 `models.list` 权限；**扩大 `permissions` 不会随热重载生效**，宿主必须显式重新加载（开发说明原话：热重载不会授予你没批准过的权限） | 面板的「宿主侧同步状态」行靠它；未授予时降级成灰字说明，不假装成功 |
 
 ---
 
@@ -268,6 +270,31 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
     全目录 `pi.cline-pass` 引用清零（13 个文件 20 处：JSDoc 模块名、stderr 前缀、health 载荷的 `plugin` 值、工具描述、README 路径）；
     根 README 把 `pi.transcript-doctor` 标为**已废弃**（宿主 v0.19.1 已修复）、`cline-pass` 行与徽章换成新目录名、TIP 里
     「宿主侧填密钥」改成 `authKind: "none"` 的正确说法；GitHub 仓库描述补了一句。
+22. **账号「测试」按钮的假失败（用户真机报的 `empty response content`）**：上游 `api.cline.bot` 拒绝一切**非流式**请求
+    （HTTP 500 + `empty response content`，同一个请求改流式发就正常），而这条「非流式被拒 → 改流式拼装」的回退原本只内联在
+    `attemptChat` 里；面板的「测试」按钮（`testAccount`）与 `probe` 直接调 `chatCompletion`，于是拿到一次假红。
+    现在抽出 `completionWithStreamFallback({ baseURL, apiKey, body, signal, timeoutMs })`（返回 `{ result, payload, failed, note }`），
+    三条路径共用；`harvest` **有意不动** —— 它要的正是 `__probe__` 那次 400 的错误正文（通道列表），走回退反而会把列表弄丢。
+23. **独立评审又抓到两条真缺陷（同一处改动，都已修）**：① `probe` 的失败分支漏了可选链：`failed` 现在也可能只由「非 2xx」成立，
+    而空体 / 非 JSON 的失败体经 `unwrapEnvelope(null)` 会变成 `null`，`payload.error` 直接 TypeError（前置代理的 502/504 HTML 页正是这情形），
+    面板只会看到一条没有理由的失败；② 拼装体把 **planner** 的路由（`choices[0].delta.provider_metadata.gateway.routing.finalProvider`）
+    平铺进了**根级 `provider`**，而根级 `provider` 恰恰是 **direct** 的标记 —— 真机上每次调用都走回退，于是 planner 被报成 direct、
+    `pinnable` 与通道落错桶。修法：拼装时按管线还原形状（planner 保留嵌套 `provider_metadata`，只有 direct 才写根级 `provider`），
+    失败文本改成 `errorText(payload?.error) || result.text.slice(0, 200) || 「HTTP <status>」` 三级兜底（同一个坑也补在「测试」按钮上）。
+    新增 4 条用例，其中 3 条先红；「测试」按钮那条另用变异验证（去掉兜底 → `actual: '' expected: 'HTTP 500'`）。
+24. **面板新增「宿主侧同步状态」行 —— 让「选择器里看不到模型」不再靠猜**：宿主是不是真的把本插件的模型同步进了它自己的库，
+    以前在面板里完全看不出来。现在面板 `status` 载荷多一个 `host = { ok, synced, total, missing[], error }`，
+    来源是 `pi.models.list()`：宿主只返回「已启用且就绪」的 provider 的模型，所以「0 条」只能说「不在选择器里」，
+    不能说清是没同步还是没就绪 —— 文案因此不猜原因。为此新增权限 `models.list`（宿主白名单里确有这个名字），
+    而**扩大 `permissions` 是热重载的唯一例外**：宿主必须显式重新加载才会授予，所以重载前这行显示灰字「读不到宿主模型清单」。
+    面板还区分了「一条模型都没注册」（你自己的选择，别怪宿主）与「注册了但宿主没同步」两种状态。
+25. **模型卡的复选框不再是蓝色大方块**：根因是全局 `input{ min-height:30px; padding:6px 9px; background:var(--card); border:1px solid var(--line) }`
+    把 16px 的复选框撑成了带边框的大方块。修法是给 `input[type="checkbox"]` 一条更具体的选择器，把尺寸/内边距/背景/边框按回原生
+    （保留 `accent-color`、`:focus-visible` 轮廓、`:disabled` 透明度），并把模型卡的竖向节奏、hint 行高、chips 尺寸对齐。
+    **复核时抓到同一次编辑的连带损伤**：`.quota-pos` / `.quota-key` / `.field-control input[type=text|number]{width:100%}`
+    这三条**与复选框无关**的规则被一起删掉了（额度翻页行和模型卡的别名/数值输入都靠它们），已原样恢复；
+    判据是**行集合比对**而不是 `git diff` —— 后者会把新插入块前后的一行标成 delete+add 的配对假象，只看 diff 会误判。
+    脚本块除新增的 `renderHostSync` 外逐字节未变，用**规范化行尾后**的哈希核对（`git show` 给 LF、工作树是 CRLF，直接比会假报不一致）。
 
 ---
 
@@ -275,10 +302,12 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 
 ```powershell
 cd D:\Pi\Chat\plugins\cline-pass
-node --test test/gateway.test.mjs      # Windows 下必须给文件路径；47 项
+node --test test/gateway.test.mjs      # Windows 下必须给文件路径；53 项
 node test/render-quota.cjs             # 面板额度卡片：63 条断言，不需要浏览器
 node test/render-model-card.cjs        # 面板模型参数卡：60 条断言（含「默认档位点不开」回归）
 node test/panel-wiring.cjs             # 面板接线：脚本要的 id/class 是否都还在
+node test/render-host-sync.cjs         # 面板宿主同步行：25 条断言（六种状态）
+node test/host-sync.cjs                # 宿主清单比对（pi.models.list 桩）：33 条断言
 ```
 
 覆盖：manifest↔代码一致性（工具 / 面板动作逐项对齐）、**清单形态守卫（`{en, zh-CN}` 只允许出现在宿主会解析 i18n 的位置）**、
@@ -289,6 +318,9 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
 **用量账本（窗口过滤、按模型·通道·天分组、坏行容错、清空、`extractUsage` 的多种成本拼写）**、
 **官方额度（按账号读取与 60 秒缓存、`refresh` 绕过、401/500 当数据返回、空窗口列表不是错误、缺百分比保持未知）**、
 **接线冒烟（临时网关 start → `/v1/models` → `state` → `usage` → 真实请求落账 → stop，用来抓漏 require 这类只在运行期暴露的错）**。
+新增覆盖：**宿主清单比对（`pi.models.list` 桩：缺权限 / 抛错 / 返回非数组 / key 双前缀 / 混入别家模型）**、
+**面板「宿主侧同步状态」行的六种渲染状态**、**probe 在「非流式被拒 → 流式拼装」下的管线判定（planner 不许被平铺成 direct）**、
+**非 2xx 无 body 时的错误文本（不许抛 TypeError、不许留空）**。
 上游由本机 mock 顶替，不需要真 key、不产生真实流量。
 
 ---
@@ -311,9 +343,12 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
 
 - 已验证（真机）：插件在 PI-Desktop 里加载并持续使用；`development.plugin.reloaded` 多次 `ok:true`、网关 `health` 正常；
   真实请求走通（非流式 `200`、`provider=deepseek`、`reasoning` 保留、`usage` 有值）；
-  源码 10 个 JS + `main.js` + 4 个测试脚本过 `node --check`；`node --test test/gateway.test.mjs` **47/47**；`node test/panel-wiring.cjs` 通过（56 个 id、全部 class 有样式、`<style>` 花括号平衡、v2 chrome meta 与标题栏变量还在）；
+  源码 10 个 JS + `main.js` + 6 个测试脚本过 `node --check`；`node --test test/gateway.test.mjs` **53/53**；
+  `node test/host-sync.cjs` 33 条（`pi.models.list` 桩：全同步 / 空清单 / 混入别家模型 / key 双前缀 / 抛错 / 缺 API / 非数组）；
+  `node test/panel-wiring.cjs` 通过（57 个 id、全部 class 有样式、`<style>` 花括号平衡、v2 chrome meta 与标题栏变量还在）；
   渲染层 63 条离线断言（`node test/render-quota.cjs`：从 `renderer/index.html` 现抽脚本、喂假 DOM 跑额度卡片，
-  口径逐条对照 DSH 原版 `UsageCard`）+ 模型卡 60 条（`node test/render-model-card.cjs`）全过；
+  口径逐条对照 DSH 原版 `UsageCard`）+ 模型卡 60 条（`node test/render-model-card.cjs`）+ 宿主同步行 25 条
+  （`node test/render-host-sync.cjs`：全同步 / 部分同步 / 未同步 / 一条都没注册 / 读不到 / 缺字段 六种状态的文案与类名）全过；
   `PluginCheck` 无 error（1 条 warning：`provider.register` / `agent.tool.register` 属高危权限，需你在加载时批准）；
   清单字段形态与宿主限额按 0.19.1 随应用发布的开发说明 + 宿主实现 + 21 个已装/内置 manifest 逐项对照。
 - 已验证（宿主库只读核对）：插件 provider 行由**宿主核心在启动 / 插件安装启用时**同步写入，开发热重载**不**刷新它
@@ -327,6 +362,18 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
   数据路径已实跑核对，渲染侧由 63 条离线断言覆盖，剩下只是打开看一眼；`ops.setModel` 真正改写 manifest 的那条路径在测试里
   刻意用了与官方值相同的 no-op 写入（避免测试改写随包发布的 manifest），要实机保存一次才算跑过；
   账本 2 MB 轮转只断言了常量。
+- 本轮已验证（真机数据 + 宿主代码定位）：宿主那行 `plugin:io.github.duya07.cline-pass:cline-pass` 的 `auth_kind` 已经是 `none`、
+  `created_at = updated_at`（= 你 17:47 重新加载插件那一刻），5 个模型与档位齐全 —— 「模型选择器里看不到」在宿主侧已经解决，
+  之前那张挂着「尚未设置 API 密钥」的截图是**旧渲染**（徽章条件是 `!hasSecret && authKind !== "none"`，行已改成 `none` 就不会再显示）。
+- 本轮新增（真机待看一眼）：面板的**宿主侧同步状态行**（第 24 条）。它读 `pi.models.list()`，而 `models.list` 属于**扩大 `permissions`**——
+  开发说明写明热重载不会授予你没批准过的权限，必须**显式重新加载**插件。所以在你重新加载之前，这行会显示灰字
+  「读不到宿主模型清单：…」；重新加载之后应显示「宿主模型已同步：5/5 已注册，模型选择器里可见」。这两种真机状态都还没亲眼看过。
+- 本轮真机观察到（权限门槛确实生效，实测）：插件目录里**任何一次保存**都会让宿主尝试热重载，而因为 manifest 多要了 `models.list`，
+  宿主**拒绝**了这次重载 —— `logs\app\plugin.log` 里连着一串 `development.plugin.reloaded ok:false` 与
+  `PERMISSION_DENIED: manifest now requests models.list; reload it from the Plugins page to review`（18:31–18:32 本地，多次）。
+  **旧实例没有被拆掉**：`http://127.0.0.1:41593/v1/models` 仍然 `HTTP 200`（14 个目录模型），也就是这段等待期里网关照常服务、
+  只是新代码尚未生效；在插件页重新加载一次即可全部生效。对照证据：另一个插件 `cn.star.skill-learning` 的
+  `plugin.api models.list ok:true count:63` 说明这个权限名与 `pi.models.list()` 在真机上是通的。
 
 ---
 

@@ -16,7 +16,9 @@
  *
  * Permissions: `provider.register` (the declared provider), `background.service`
  * (the gateway must outlive any panel), `agent.tool.register` (the tools),
- * `ui.panel` (the panel), `notify` (startup failures).
+ * `ui.panel` (the panel), `notify` (startup failures), `models.list` (ask the
+ * host what it really has for this provider, which is the only way the panel can
+ * tell that a stale provider row dropped every model from the picker).
  *
  * @module cline-pass
  */
@@ -114,6 +116,88 @@ function liveGateway() {
 /** Describe the failure of one operation in a shape a tool result can carry. */
 function failure(error) {
   return { ok: false, error: error instanceof Error ? error.message : String(error), code: error?.code ?? '' }
+}
+
+/* ------------------------------ host model sync --------------------------- */
+
+/**
+ * The permission that unlocks `pi.models.list()` (a name in the host's own
+ * `PLUGIN_PERMISSIONS` whitelist). Without it the host refuses the call, so the
+ * failure is reported as a sentence instead of thrown at the panel.
+ */
+const MODELS_PERMISSION = 'models.list'
+
+/**
+ * What the *host* has for this provider - not what this plugin declared.
+ *
+ * A PI-Desktop plugin can only *declare* a provider: the host owns the row in
+ * `pi.sqlite` and its model picker reads that row. When the row goes stale (the
+ * case that prompted this: a plugin-owned provider with `auth_kind='api_key'`
+ * and no secret) every model of this provider silently disappears from the
+ * picker while the gateway keeps answering and the panel's own model list still
+ * looks perfect. `pi.models.list()` is the only in-contract signal: the host
+ * returns the models of the providers it considers enabled *and* ready, so zero
+ * hits means "not in the picker" - never which of the two it is.
+ *
+ * Never throws: the caller is a panel call, and an unhandled rejection would end
+ * the call with nothing to show the user.
+ *
+ * @param modelIds - the model ids this plugin declares (`manifest.json`).
+ * @returns A frozen `{ ok, synced, total, missing, error }`.
+ */
+async function hostModelSync(modelIds) {
+  const ids = Array.isArray(modelIds) ? modelIds.map((id) => String(id ?? '')) : []
+  const total = ids.length
+  // Every failure leaves through here, so the shape never depends on the cause.
+  const failed = (error) => Object.freeze({ ok: false, synced: 0, total, missing: ids.slice(), error })
+  const host = globalThis.pi
+  if (!host?.models || typeof host.models.list !== 'function') {
+    return failed(
+      `宿主没有提供 models.list：需要在 manifest 的 permissions 里声明 "${MODELS_PERMISSION}" 权限并重新加载插件（旧宿主也可能没有这个 API）。`,
+    )
+  }
+  let listing
+  try {
+    listing = await host.models.list()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return failed(`宿主 models.list 调用失败：${message.replace(/\s+/g, ' ').trim().slice(0, 200)}`)
+  }
+  if (!Array.isArray(listing)) {
+    return failed(`宿主 models.list 返回的不是数组（${listing === null ? 'null' : typeof listing}），无法判断同步状态。`)
+  }
+  // Tolerant on purpose: the host's `key` is `${providerId}/${modelId}`, and
+  // because our model ids are themselves prefixed the key ends up doubled.
+  const matched = new Set()
+  for (const entry of listing) {
+    if (!entry || typeof entry !== 'object') continue
+    for (const id of ids) {
+      if (matched.has(id)) continue
+      if (entry.modelId === id || entry.key === id || String(entry.key ?? '').endsWith(`/${id}`)) matched.add(id)
+    }
+  }
+  const missing = ids.filter((id) => !matched.has(id))
+  return Object.freeze({ ok: true, synced: ids.length - missing.length, total, missing, error: '' })
+}
+
+/**
+ * The ids this plugin currently declares to the host.
+ *
+ * `src/models.js` writes exactly the *registered* models into `manifest.json`,
+ * which is the file the host loads, so unregistered models must not be counted
+ * as "not synced". Anything unexpected yields an empty list - the panel then
+ * says "0 declared" instead of inventing ids.
+ */
+function declaredModelIds(gw) {
+  try {
+    const models = gw.ops.models()
+    if (!Array.isArray(models)) return []
+    return models
+      .filter((model) => model && model.registered !== false && typeof model.id === 'string' && model.id !== '')
+      .map((model) => model.id)
+  } catch {
+    return []
+  }
 }
 
 /* --------------------------------- tools --------------------------------- */
@@ -422,7 +506,10 @@ async function onPanelInvoke(channel, payload) {
   const input = payload && typeof payload === 'object' ? payload : {}
   switch (String(input.action ?? '')) {
     case 'status':
-      return { ok: true, status: { ...gw.ops.status(input.apiKey ?? ''), startError } }
+      // `host` is what the host really has for this provider, not what this
+      // plugin declared: a provider row the picker dropped (stale auth, or a
+      // host that never refreshed the manifest) is invisible from in here.
+      return { ok: true, status: { ...gw.ops.status(input.apiKey ?? ''), startError }, host: await hostModelSync(declaredModelIds(gw)) }
     case 'probe':
       return { ok: true, result: await gw.ops.probe(budgeted(input, PANEL_BUDGET_MS)) }
     case 'validate':
@@ -460,4 +547,4 @@ async function onPanelInvoke(channel, payload) {
   }
 }
 
-module.exports = { onLoad, onUnload, onPanelInvoke, createLogger, TOOL_NAMES, PANEL_CHANNEL, PANEL_ACTIONS }
+module.exports = { onLoad, onUnload, onPanelInvoke, createLogger, hostModelSync, TOOL_NAMES, PANEL_CHANNEL, PANEL_ACTIONS }

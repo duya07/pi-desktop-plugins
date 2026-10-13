@@ -151,6 +151,20 @@
       input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-soft) 85%, transparent); }
       input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var(--line) 85%, var(--ink-soft) 15%); }
       input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); background: var(--card); }
+      /* checkboxes: native 16px, left-aligned, keep native appearance */
+      input[type="checkbox"] {
+        width: 16px; height: 16px; min-width: 16px; min-height: 16px;
+        padding: 0; margin: 0; flex: none;
+        accent-color: var(--accent);
+        vertical-align: middle;
+        cursor: pointer;
+        background: transparent; border: none; border-radius: 0; box-shadow: none;
+        appearance: auto; -webkit-appearance: checkbox;
+      }
+      input[type="checkbox"]:hover { border-color: transparent; box-shadow: none; background: transparent; }
+      input[type="checkbox"]:focus { border-color: transparent; box-shadow: none; background: transparent; }
+      input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+      input[type="checkbox"]:disabled { opacity: 0.55; cursor: not-allowed; }
       /* buttons: consistent 30px footprint, clear hover/active/disabled */
       button {
         display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -229,19 +243,29 @@
       details.model-entry[open] { background: var(--bg); border-color: color-mix(in srgb, var(--line) 80%, var(--accent) 20%); }
       details.model-entry > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; list-style: none; min-width: 0; }
       details.model-entry > summary::-webkit-details-marker { display: none; }
-      .model-body { padding-top: 10px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+      .model-body { padding-top: 10px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+      #model-settings > .hint { line-height: 1.75; max-width: 72ch; }
+      #model-settings > .hint + .hint { margin-top: -6px; }
       .levels { display: flex; gap: 6px; flex-wrap: wrap; }
-      .levels label { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; min-width: 0; background: var(--card); cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease; font-size: 12px; }
+      .levels label { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; min-width: 0; background: var(--card); cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease; font-size: 12px; line-height: 1.4; }
       .levels label:hover { border-color: color-mix(in srgb, var(--line) 75%, var(--accent) 25%); background: var(--accent-soft); }
       .levels label.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
       .levels label.is-on:hover { background: var(--accent); border-color: var(--accent); color: #fff; filter: brightness(1.05); }
       .levels input { margin: 0; accent-color: var(--accent); }
-      .model-stack { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+      .levels input[type="checkbox"] { width: 16px; height: 16px; min-width: 16px; min-height: 16px; }
+      .model-stack { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
       .model-field { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
       .model-field > label.field-label { min-width: 132px; flex: none; color: var(--ink-soft); font-size: 12px; font-weight: 500; line-height: 1.4; padding-top: 6px; }
       .model-field > .field-control { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+      /* checkbox rows: keep 16px box left-aligned with label, not stretched/centered */
+      .model-field:has(> .field-control > input[type="checkbox"][data-field="registered"]),
+      .model-field:has(> .field-control > input[type="checkbox"][data-field="supportsImages"]) { align-items: center; }
+      .model-field:has(> .field-control > input[type="checkbox"][data-field="registered"]) > label.field-label,
+      .model-field:has(> .field-control > input[type="checkbox"][data-field="supportsImages"]) > label.field-label { padding-top: 0; }
+      .model-field:has(> .field-control > input[type="checkbox"][data-field="registered"]) > .field-control,
+      .model-field:has(> .field-control > input[type="checkbox"][data-field="supportsImages"]) > .field-control { flex-direction: row; align-items: center; }
       .preset-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-width: 0; }
-      .preset-chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; font-size: 12px; line-height: 1.4; background: var(--card); color: var(--ink-soft); cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease; white-space: nowrap; }
+      .preset-chip { border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 12px; line-height: 1.4; background: var(--card); color: var(--ink-soft); cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease; white-space: nowrap; }
       .preset-chip:hover { border-color: color-mix(in srgb, var(--line) 70%, var(--accent) 30%); color: var(--ink); background: var(--accent-soft); }
       .preset-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
       .field-control input[type="text"], .field-control input[type="number"] { width: 100%; }
@@ -271,6 +295,11 @@
         th, td { padding: 6px 6px; font-size: 11.5px; }
         .stats { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
       }
+      .host-sync { font-size: 12px; line-height: 1.65; padding: 7px 14px; background: var(--card); border-bottom: 1px solid var(--line); color: var(--ink-soft); overflow-wrap: anywhere; }
+      .host-sync[hidden] { display: none !important; }
+      .host-sync.ok { color: var(--ok); }
+      .host-sync.warn { color: var(--warn); }
+      .host-sync.muted { color: var(--ink-soft); }
       @media (prefers-reduced-motion: reduce) {
         .spin { animation: none; }
         .quota-fill { transition: none; }
@@ -290,6 +319,7 @@
         <button id="restart">重启网关</button>
       </header>
       <div class="busy" id="busy" role="status" aria-live="polite" hidden></div>
+      <div id="host-sync" class="host-sync" hidden></div>
 
       <nav class="tabs" id="tabs">
         <button data-tab="accounts" aria-selected="true">账号池</button>
@@ -650,10 +680,59 @@
             },
           );
         }
-        /* ------------------------------- rendering ------------------------------ */
+        function renderHostSync() {
+          var el = document.getElementById("host-sync");
+          if (!el) return;
+          var host = state.status && state.status.host;
+          if (!host || typeof host !== "object" || Array.isArray(host)) {
+            el.textContent = "";
+            el.className = "host-sync";
+            el.hidden = true;
+            return;
+          }
+          var ok = host.ok === true;
+          var synced = Number(host.synced);
+          var total = Number(host.total);
+          if (!Number.isFinite(synced)) synced = 0;
+          if (!Number.isFinite(total)) total = 0;
+          var missing = Array.isArray(host.missing) ? host.missing : [];
+          var error = typeof host.error === "string" ? host.error : "";
+          if (!ok) {
+            el.className = "host-sync muted";
+            el.textContent = "读不到宿主模型清单：" + error;
+            el.hidden = false;
+            return;
+          }
+          // Nothing declared means nothing to sync. Without this branch the
+          // next one would blame the host for the user's own unregistration.
+          if (total === 0) {
+            el.className = "host-sync muted";
+            el.textContent = "本插件当前没有注册任何模型（在模型卡里勾选“注册进宿主模型选择器”并保存，重载插件后生效）";
+            el.hidden = false;
+            return;
+          }
+          if (synced === 0) {
+            el.className = "host-sync warn";
+            el.textContent = "宿主尚未同步本插件的模型，模型选择器里看不到它们（在设置页重开插件或重启 PI-Desktop 后生效）";
+            el.hidden = false;
+            return;
+          }
+          if (missing.length === 0) {
+            el.className = "host-sync ok";
+            el.textContent = "宿主模型已同步：" + synced + "/" + total + " 已注册，模型选择器里可见";
+            el.hidden = false;
+            return;
+          }
+          var shown = missing.slice(0, 2).join("、");
+          el.className = "host-sync warn";
+          el.textContent = "宿主模型部分同步：已注册 " + synced + "/" + total + "，缺 " + shown + "（重开设置页或重启 PI-Desktop 后生效）";
+          el.hidden = false;
+        }
 
+        /* ------------------------------- rendering ------------------------------ */
         function renderStatus() {
           var status = state.status;
+          renderHostSync();
           if (!status) return;
           document.getElementById("dot").className = status.running ? "dot on" : "dot";
           document.getElementById("state").textContent = status.running
