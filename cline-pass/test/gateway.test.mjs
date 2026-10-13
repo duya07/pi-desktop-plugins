@@ -1,11 +1,11 @@
 /**
- * Self-test for the pi.cline-pass gateway. Runs on plain Node (>=20.3), with no
+ * Self-test for the cline-pass gateway. Runs on plain Node (>=20.3), with no
  * PI-Desktop host involved: a local mock upstream stands in for Cline Pass, and
  * the gateway is driven over real HTTP on a random loopback port.
  *
  *   node --test test/
  *
- * @module pi.cline-pass/test
+ * @module cline-pass/test
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -17,6 +17,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { createConfig } = require('../src/config.js')
+const configModule = require('../src/config.js')
 const { createGateway } = require('../src/gateway.js')
 const gatewayModule = require('../src/gateway.js')
 const protocol = require('../src/protocol.js')
@@ -215,7 +216,12 @@ function rawStatus(pathname, headers) {
 test('manifest, catalog and entry point agree with each other', () => {
   const provider = manifest.contributes.providers[0]
   assert.equal(provider.apiStyle, 'chat_completions')
-  assert.equal(provider.authKind, 'api_key')
+  // `authKind: "none"` is load-bearing, not decoration: the host only sends a
+  // plugin provider's models to the model picker when
+  // `enabled && (hasSecret || authKind === "none")`, and this plugin keeps its
+  // Cline keys in its own data directory where the host cannot see them. With
+  // `api_key` the whole provider silently disappears from the picker.
+  assert.equal(provider.authKind, 'none')
   assert.equal(provider.baseUrl, `http://127.0.0.1:${gatewayModule.manifestPort()}/v1`)
   // The manifest declares a subset of the catalog: only the registered models
   // reach the host's picker, while the catalog still holds every model Cline
@@ -449,6 +455,36 @@ test('gateway refuses a request without any usable account', async () => {
   configStore.update({ accounts: saved })
 })
 
+test("the host's no-auth placeholder never reaches the upstream", async () => {
+  // A keyless plugin provider (`authKind: "none"`) still gets a bearer token
+  // from the host - the literal string `pi-desktop-no-auth`. It is not a Cline
+  // key: if the pool used it, the `host` account would look usable and every
+  // request would spend one failed upstream call on it before failing over.
+  const placeholder = configModule.HOST_NO_AUTH_KEY
+  const saved = configStore.get().accounts
+  mock.state.requests.length = 0
+  configStore.update({ accounts: [{ name: 'host', displayName: 'host', source: 'host', enabled: true }] })
+  const refused = await chat({ stream: false }, { key: placeholder })
+  assert.equal(refused.status, 502, 'a placeholder-only pool has no usable account')
+  assert.equal(mock.state.requests.length, 0, 'the placeholder must never be sent to Cline')
+
+  // Beside a real inline account the request goes out on that account's key.
+  configStore.update({
+    accounts: [
+      { name: 'host', displayName: 'host', source: 'host', enabled: true },
+      { name: 'inline-one', displayName: 'one', source: 'inline', enabled: true, key: 'key-inline' },
+    ],
+  })
+  const response = await chat({ stream: false }, { key: placeholder })
+  assert.equal(response.status, 200)
+  assert.equal(mock.state.requests.at(-1).key, 'key-inline')
+  // The status the panel reads must agree: the host account has no key here.
+  const host = gateway.ops.status(placeholder).accounts.find((entry) => entry.name === 'host')
+  assert.equal(host.keyConfigured, false)
+  assert.equal(host.keyHint, '')
+  configStore.update({ accounts: saved })
+})
+
 test('probe harvests the channel list from the routing error', async () => {
   gateway.ops.clearPin({ model: 'cline-pass/glm-5.3' })
   const result = await gateway.ops.probe({ model: 'cline-pass/glm-5.3' })
@@ -504,6 +540,7 @@ test('the gateway port, status and settings stay consistent', () => {
   assert.equal(flash.supportsImages, true)
   assert.deepEqual(flash.edited, [])
   assert.deepEqual(flash.published, {
+    name: 'DeepSeek V4.1 Flash',
     contextWindow: 1048576,
     maxTokens: 943718,
     supportsImages: true,
@@ -734,6 +771,7 @@ test('model settings: fourteen models, five registered, nothing edited', () => {
     defaultThinkingLevel: 'low',
     registered: true,
     published: {
+      name: 'DeepSeek V4.1 Flash',
       contextWindow: 1048576,
       maxTokens: 943718,
       supportsImages: true,
@@ -781,6 +819,7 @@ test('model settings: an override wins and the published value stays visible', (
   // The published numbers ride along, so an edited window is never shown as
   // Cline's own.
   assert.deepEqual(glm.published, {
+    name: 'GLM-5.3',
     contextWindow: 1048576,
     maxTokens: 943718,
     supportsImages: false,
@@ -854,6 +893,31 @@ test('model settings: thinking levels keep off and a bad default falls back', ()
   // A chosen default that is in the ladder is honoured as is.
   const chosen = pick({ [MODEL]: { thinkingLevels: ['high', 'max'], defaultThinkingLevel: 'max' } })
   assert.equal(chosen.defaultThinkingLevel, 'max')
+})
+
+test('model settings: the alias and the host omit default survive the filter', () => {
+  // The panel's 显示名 field writes `name`; the host rewrites it into its own
+  // `alias` column. It has to make it through sanitizeSettings, or the field is
+  // a dead control that looks like it saved.
+  const renamed = modelRegistry.effectiveModels({ [MODEL]: { name: '  我的主模型  ' } }).find((model) => model.id === MODEL)
+  assert.equal(renamed.name, '我的主模型', 'the alias is trimmed and kept')
+  assert.equal(renamed.published.name, 'DeepSeek V4.1 Flash', 'the catalog name stays visible for comparison')
+  assert.ok(renamed.edited.includes('name'), 'so the panel can mark the field as edited')
+  const long = modelRegistry.effectiveModels({ [MODEL]: { name: 'x'.repeat(120) } }).find((model) => model.id === MODEL)
+  assert.equal(long.name.length, 60, 'the host caps an alias at 60 characters, so we cap it first')
+  const blank = modelRegistry.effectiveModels({ [MODEL]: { name: '   ' } }).find((model) => model.id === MODEL)
+  assert.equal(blank.name, 'DeepSeek V4.1 Flash', 'whitespace is not an alias')
+  // `omit` is the host's own "send no thinking field" marker: it is not one of
+  // the ticking levels, so the usual membership test would rewrite it.
+  const pick = (settings) => modelRegistry.effectiveModels(settings).find((model) => model.id === MODEL)
+  const omitted = pick({ [MODEL]: { thinkingLevels: ['off', 'high', 'max'], defaultThinkingLevel: 'omit' } })
+  assert.equal(omitted.defaultThinkingLevel, 'omit')
+  // The manifest the host reads carries both, since that is where it looks.
+  const manifestModel = modelRegistry
+    .registeredManifestModels({ [MODEL]: { name: '主模型', defaultThinkingLevel: 'omit' } })
+    .find((model) => model.id === MODEL)
+  assert.equal(manifestModel.name, '主模型')
+  assert.equal(manifestModel.defaultThinkingLevel, 'omit')
 })
 
 /* ---------------------------------- manifest sync ---------------------------------- */

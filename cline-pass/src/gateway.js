@@ -14,7 +14,7 @@
  * invisible: a candidate that dies early is retried, a candidate that dies late
  * ends the stream with an error frame.
  *
- * @module pi.cline-pass/gateway
+ * @module cline-pass/gateway
  */
 'use strict'
 
@@ -420,7 +420,7 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
       return
     }
     if (url.pathname === '/__pi/cline-pass/health') {
-      sendJson(res, 200, { ok: true, plugin: 'pi.cline-pass', build: BUILD_TAG, instanceId, port })
+      sendJson(res, 200, { ok: true, plugin: 'cline-pass', build: BUILD_TAG, instanceId, port })
       return
     }
     if (url.pathname === '/__pi/cline-pass/state') {

@@ -14,7 +14,7 @@
  * file bounded: past `MAX_BYTES` it becomes `usage.1.jsonl` and the live file
  * starts over, so queries read at most two files.
  *
- * @module pi.cline-pass/usage
+ * @module cline-pass/usage
  */
 'use strict'
 

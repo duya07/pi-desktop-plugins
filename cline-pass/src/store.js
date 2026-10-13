@@ -7,7 +7,7 @@
  * `config.js`). This is derived data any probe can rebuild, so it is never
  * persisted and dies with the plugin process.
  *
- * @module pi.cline-pass/store
+ * @module cline-pass/store
  */
 'use strict'
 

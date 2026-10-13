@@ -6,7 +6,7 @@
  * thin fetch wrapper: one JSON request, one streaming request, no retries (the
  * caller owns candidate and account failover).
  *
- * @module pi.cline-pass/cline
+ * @module cline-pass/cline
  */
 'use strict'
 

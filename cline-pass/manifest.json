@@ -39,7 +39,7 @@
         "description": "经由本插件本地网关的 Cline Pass 订阅模型：通道 pin 与 failover、账号池、思考档位映射。",
         "baseUrl": "http://127.0.0.1:41593/v1",
         "apiStyle": "chat_completions",
-        "authKind": "api_key",
+        "authKind": "none",
         "models": [
           {
             "id": "cline-pass/deepseek-v4.1-flash",

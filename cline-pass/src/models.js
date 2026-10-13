@@ -19,7 +19,7 @@
  * guessed - the catalog holds what Cline publishes, the settings hold what the
  * user asked for, and the manifest is the merge.
  *
- * @module pi.cline-pass/models
+ * @module cline-pass/models
  */
 'use strict'
 
@@ -97,7 +97,15 @@ function sanitizeSettings(raw) {
     }
     if (typeof patch.supportsImages === 'boolean') clean.supportsImages = patch.supportsImages
     if (Array.isArray(patch.thinkingLevels)) clean.thinkingLevels = sanitizeLevels(patch.thinkingLevels, undefined)
-    if (typeof patch.defaultThinkingLevel === 'string') clean.defaultThinkingLevel = patch.defaultThinkingLevel
+    // `omit` is the host's own marker for "send no thinking field at all": its
+    // model editor offers it as a default level whenever the model has any level
+    // besides `off`, so it has to survive this filter like any other level.
+    if (typeof patch.defaultThinkingLevel === 'string' && patch.defaultThinkingLevel.trim().length > 0) {
+      clean.defaultThinkingLevel = patch.defaultThinkingLevel.trim() === 'omit' ? 'omit' : patch.defaultThinkingLevel
+    }
+    // The host rewrites a model's `name` into its own `alias` column (and caps it
+    // at 60 characters), so this is the one user-facing label it really keeps.
+    if (typeof patch.name === 'string' && patch.name.trim().length > 0) clean.name = patch.name.trim().slice(0, 60)
     if (Object.keys(clean).length > 0) out[id] = clean
   }
   return out
@@ -116,14 +124,21 @@ function effectiveModels(settings = {}) {
       const base = defaultsFor(id)
       const patch = overrides[id] ?? {}
       const thinkingLevels = sanitizeLevels(patch.thinkingLevels, base.thinkingLevels)
-      const preferred = typeof patch.defaultThinkingLevel === 'string' && thinkingLevels.includes(patch.defaultThinkingLevel)
-        ? patch.defaultThinkingLevel
-        : thinkingLevels.includes(base.defaultThinkingLevel)
-          ? base.defaultThinkingLevel
-          : thinkingLevels[0]
+      // `omit` survives even though it is not one of the ticking levels: it is
+      // the host's own spelling for "no thinking field by default", which is what
+      // `off` means on the wire. Its model editor offers both, so we mirror it
+      // instead of silently rewriting the user's choice back to a level.
+      const preferred =
+        patch.defaultThinkingLevel === 'omit'
+          ? 'omit'
+          : typeof patch.defaultThinkingLevel === 'string' && thinkingLevels.includes(patch.defaultThinkingLevel)
+            ? patch.defaultThinkingLevel
+            : thinkingLevels.includes(base.defaultThinkingLevel)
+              ? base.defaultThinkingLevel
+              : thinkingLevels[0]
       return {
         id,
-        name: base.name,
+        name: patch.name ?? base.name,
         contextWindow: patch.contextWindow ?? base.contextWindow,
         maxTokens: patch.maxTokens ?? base.maxTokens,
         supportsImages: typeof patch.supportsImages === 'boolean' ? patch.supportsImages : base.supportsImages,
@@ -131,6 +146,7 @@ function effectiveModels(settings = {}) {
         defaultThinkingLevel: preferred,
         registered: typeof patch.registered === 'boolean' ? patch.registered : base.registered,
         published: {
+          name: base.name,
           contextWindow: base.contextWindow,
           maxTokens: base.maxTokens,
           supportsImages: base.supportsImages,

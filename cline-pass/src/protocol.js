@@ -10,7 +10,7 @@
  * - **direct** (OpenRouter): top-level `provider.only/order/sort`.
  * - **planner** (Vercel AI Gateway): only `providerOptions.gateway.*` survives.
  *
- * @module pi.cline-pass/protocol
+ * @module cline-pass/protocol
  */
 'use strict'
 

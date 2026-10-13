@@ -7,7 +7,7 @@
  * answers the questions the panel and the agent tools ask - which pipeline does
  * this model run on, which channels serve it, does a pin actually stick.
  *
- * @module pi.cline-pass/engine
+ * @module cline-pass/engine
  */
 'use strict'
 

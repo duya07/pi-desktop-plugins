@@ -11,7 +11,7 @@
  * MIT): a round-robin cursor over the enabled accounts plus a cooldown map, so
  * a quota-limited key is skipped for a while instead of failing every request.
  *
- * @module pi.cline-pass/config
+ * @module cline-pass/config
  */
 'use strict'
 
@@ -27,6 +27,19 @@ const COOLDOWN_MS = { QUOTA_EXCEEDED: 15 * 60 * 1000, AUTH: 30 * 60 * 1000 }
 
 /** The account name reserved for the key the host itself sends. */
 const HOST_ACCOUNT = 'host'
+
+/**
+ * The key the host puts on the wire when a plugin provider declares
+ * `authKind: "none"`.
+ *
+ * A plugin provider that wants no host-side secret has exactly one switch:
+ * `authKind: "none"` (`pi-desktop` reads it when it decides whether a provider
+ * is usable at all - a provider with a missing secret and `authKind: "api_key"`
+ * disappears from the model picker entirely). The host then sends this
+ * placeholder as its bearer token, which is not a Cline key and must never be
+ * handed to the upstream: it is treated as "the host has no key".
+ */
+const HOST_NO_AUTH_KEY = 'pi-desktop-no-auth'
 
 /** A fresh, empty configuration. */
 function defaultConfig() {
@@ -184,7 +197,7 @@ function createConfig({ dataDir, logger = () => {} } = {}) {
  */
 function keyFor(account, hostKey) {
   if (!account || account.enabled === false) return null
-  if (account.source === 'host') return hostKey || null
+  if (account.source === 'host') return hostKey && hostKey !== HOST_NO_AUTH_KEY ? hostKey : null
   return typeof account.key === 'string' && account.key.length > 0 ? account.key : null
 }
 
@@ -328,4 +341,4 @@ function duplicateNames(config, hostKey) {
   return names
 }
 
-module.exports = { DEFAULT_BASE_URL, COOLDOWN_MS, HOST_ACCOUNT, defaultConfig, normalize, createConfig, createAccountPool, keyFor, maskKey, duplicateNames }
+module.exports = { DEFAULT_BASE_URL, COOLDOWN_MS, HOST_ACCOUNT, HOST_NO_AUTH_KEY, defaultConfig, normalize, createConfig, createAccountPool, keyFor, maskKey, duplicateNames }

@@ -33,7 +33,7 @@
  * not a published capability - the panel says so, and it is not registered by
  * default.
  *
- * @module pi.cline-pass/catalog
+ * @module cline-pass/catalog
  */
 'use strict'
 

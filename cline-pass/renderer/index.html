@@ -231,15 +231,36 @@
       details.model-entry > summary::-webkit-details-marker { display: none; }
       .model-body { padding-top: 10px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
       .levels { display: flex; gap: 6px; flex-wrap: wrap; }
-      .levels label { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; min-width: 0; background: var(--card); cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease; }
+      .levels label { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; min-width: 0; background: var(--card); cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease; font-size: 12px; }
       .levels label:hover { border-color: color-mix(in srgb, var(--line) 75%, var(--accent) 25%); background: var(--accent-soft); }
+      .levels label.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .levels label.is-on:hover { background: var(--accent); border-color: var(--accent); color: #fff; filter: brightness(1.05); }
       .levels input { margin: 0; accent-color: var(--accent); }
+      .model-stack { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+      .model-field { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
+      .model-field > label.field-label { min-width: 132px; flex: none; color: var(--ink-soft); font-size: 12px; font-weight: 500; line-height: 1.4; padding-top: 6px; }
+      .model-field > .field-control { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+      .preset-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-width: 0; }
+      .preset-chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; font-size: 12px; line-height: 1.4; background: var(--card); color: var(--ink-soft); cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease; white-space: nowrap; }
+      .preset-chip:hover { border-color: color-mix(in srgb, var(--line) 70%, var(--accent) 30%); color: var(--ink); background: var(--accent-soft); }
+      .preset-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .field-control input[type="text"], .field-control input[type="number"] { width: 100%; }
+      .field-input-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .field-input-row input { flex: 1 1 160px; min-width: 0; }
+      .host-only { border: 1px dashed var(--line); border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 96%, var(--bg)); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+      .host-only-title { font-weight: 600; font-size: 12px; color: var(--ink-soft); line-height: 1.4; }
+      .host-only-grid { display: flex; flex-wrap: wrap; gap: 8px 16px; min-width: 0; }
+      .host-only-item { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ink-soft); line-height: 1.5; }
+      .host-only-item input[disabled] { opacity: 0.55; }
+      .flash-hint { color: var(--bad); font-size: 12px; }
       .row > label.wide { min-width: 132px; }
       @media (max-width: 1000px) {
         main { padding: 12px 12px 16px; }
         .bar { padding: 8px 12px; }
         .card { padding: 12px 12px; }
         #history-body td:last-child, #accounts-body td:nth-child(2), #accounts-body td:nth-child(3) { max-width: 220px; }
+        .model-field { flex-direction: column; gap: 6px; }
+        .model-field > label.field-label { min-width: 0; padding-top: 0; }
       }
       @media (max-width: 720px) {
         .grid2 { grid-template-columns: 1fr; }
@@ -311,7 +332,7 @@
               <button class="primary" id="add-account">添加</button>
               <button id="cancel-edit" hidden>取消</button>
             </div>
-            <div class="hint">提示：模型设置页里填的那把 key 会作为 “host” 账号参与池（内存中使用，不落盘），它不列在上面的表里。</div>
+            <div class="hint">提示：本 provider 已声明为 <code>authKind: "none"</code>，不需要在宿主「模型设置」里填密钥；密钥只在下方「账号池」添加内联账号。宿主仍会发一个占位 Authorization 头，插件会忽略它。</div>
           </div>
         </section>
 
@@ -363,8 +384,8 @@
           <div class="card" id="model-settings">
             <h3>模型参数（自填 + 注册）</h3>
             <div class="hint">
-              这里改的是宿主读的那份 manifest：只有勾上「注册」的模型才会出现在宿主的模型选择器里，未注册的模型只在网关里存在（选中它发请求仍可用，但宿主的模型列表里看不到）。另外注意：宿主里若已存在同 id 的「自建」provider 模型，请求可能由它直接服务而不经过本网关 —— 那些请求在 pin、账号池和用量里都看不到（看「用量」页有没有数据就能判断）。
-              保存只提交改动过的字段。注意：宿主 provider 行只在插件安装/启用（或宿主启动）时同步，实测开发热重载**不会**刷新它 —— 保存后要让新参数/新模型真的进模型选择器，请到插件页把本插件停用再启用（或重启 PI-Desktop）。
+              这里改的是宿主启动时读取的 manifest：勾选「注册进宿主模型选择器」的模型才会出现在宿主的模型选择器里；未注册的模型仍可通过网关直接调用，但在宿主列表中不可见。另请注意：若宿主中已存在同 id 的自建 provider 模型，请求可能绕过本网关直接由宿主处理，此时 pin、账号池和用量统计均不会记录（可在「用量」页确认是否有数据）。
+              保存时只提交已改动的字段。宿主的 provider 配置仅在插件安装/启用或宿主启动时同步，开发时的热重载不会刷新。如需让保存后的新参数/新模型在模型选择器中生效，请到插件页停用再启用本插件，或重启 PI-Desktop。
             </div>
             <div class="hint">
               「已改」= 这个字段被本面板覆盖过；「官方值」= Cline 目录里的值，只作对照，不会自动回写。档位控件来自目录：effort 是滑杆、toggle 是开关、none 表示该模型没有思考档位。
@@ -399,7 +420,7 @@
             <div class="hint">
               数字来自 Cline 官方接口 <code>GET /users/me/plan/usage-limits</code>，显示的是该账号的<b>已用</b>比例（条长=已用，≥90% 红、≥70% 橙）；
               和下面「用量」那张卡的本地账本不是一个口径 —— 账本只统计经过本网关的请求，官方额度里还包含这个账号在别处用掉的量。
-              只列插件读得到密钥的账号（「账号池」里那几条内联账号）：模型设置页那把密钥（host）只活在请求内存里，读不到，所以不在这里出现。
+              只列插件读得到密钥的账号（「账号池」里那几条内联账号）；本 provider 为 <code>authKind: "none"</code>，宿主的占位 Authorization 头会被忽略，不在此列。
             </div>
             <div id="quota-body"></div>
           </div>
@@ -475,7 +496,7 @@
           <div class="card">
             <h3>怎么用</h3>
             <div class="hint">
-              1. 到“设置 → 模型 / Providers”，找到本插件声明的 provider「Cline Pass（本地网关）」，填入 Cline API Key（这把 key 会作为 host 账号参与池）。<br />
+              1. 本 provider 已是 <code>authKind: "none"</code>，无需在宿主「设置 → 模型 / Providers」里填密钥；密钥只在插件面板「账号池」里添加内联账号（宿主仍会发一个占位 Authorization 头，插件会忽略）。<br />
               2. 在模型选择里选 cline-pass/* 的模型；请求会经本机网关转发到上游，pin / failover / 账号轮询都在网关里生效。<br />
               3. 网关只监听 127.0.0.1；插件卸载或禁用时端口会被释放。
             </div>
@@ -666,7 +687,7 @@
           hint.textContent = (status.running
             ? "上游 baseUrl：" + status.baseUrl + " · provider 地址：" + status.providerBaseUrl
             : "网关没有监听：" + (status.startError || "未知原因") + "（可点右上角“重启网关”再试）")
-            + (hasHost ? " · 模型设置页里的密钥会作为 host 账号参与轮转：它只在当次请求的内存里，插件读不到也改不了，所以不列在表里" : "");
+            + " · provider authKind: none（密钥只在“账号池”内联账号，宿主占位头已忽略）";
 
           var body = document.getElementById("accounts-body");
           body.innerHTML = "";
@@ -748,7 +769,7 @@
             var tdEmpty = document.createElement("td");
             tdEmpty.colSpan = 5;
             tdEmpty.className = "hint";
-            tdEmpty.textContent = "还没有内联账号：在下面填一个账号名和 Cline API Key，点「添加」。";
+            tdEmpty.textContent = "还没有内联账号：在下面填一个账号名和 Cline API Key，点「添加」。本 provider 为 authKind: none，无需在宿主设置里填密钥。";
             empty.appendChild(tdEmpty);
             body.appendChild(empty);
           }
@@ -850,6 +871,8 @@
         /* ------------------------- 模型参数（自填 + 注册） ------------------------- */
 
         var LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+        var CW_PRESETS = [{ label: "128k", value: 128000 }, { label: "256k", value: 256000 }, { label: "312k", value: 312000 }, { label: "500k", value: 500000 }, { label: "1M", value: 1000000 }];
+        var MAX_PRESETS = [{ label: "4k", value: 4000 }, { label: "8k", value: 8000 }, { label: "16k", value: 16000 }, { label: "32k", value: 32000 }, { label: "128k", value: 128000 }];
         var LIMITS = { contextWindow: { min: 1000, max: 100000000 }, maxTokens: { min: 1, max: 100000000 } };
 
         function node(tag, className, text) {
@@ -909,11 +932,34 @@
         function modelSignature(models) {
           return models.map(function (model) {
             return [
-              model.id, model.registered, model.contextWindow, model.maxTokens, model.supportsImages,
+              model.id, model.name, model.registered, model.contextWindow, model.maxTokens, model.supportsImages,
               (model.thinkingLevels || []).join("+"), model.defaultThinkingLevel, model.lever,
               model.fallback === true, (model.edited || []).join("+"),
             ].join("|");
           }).join("\n");
+        }
+        function flashField(input, message) {
+          var host = input && input.parentNode ? input.parentNode : null;
+          if (!host) { log(message); return; }
+          var tip = host.querySelector(".flash-hint");
+          if (!tip) { tip = node("div", "flash-hint", message); host.appendChild(tip); }
+          else tip.textContent = message;
+          input.style.borderColor = "var(--bad)";
+          input.focus();
+          window.setTimeout(function () {
+            if (tip && tip.parentNode) tip.parentNode.removeChild(tip);
+            input.style.borderColor = "";
+          }, 2500);
+        }
+        function syncPresetHighlight(input, chips, presets) {
+          var raw = input.value.trim();
+          var num = Math.floor(Number(raw));
+          var valid = raw !== "" && String(num) === raw && Number.isFinite(num) && num > 0;
+          Array.prototype.forEach.call(chips.querySelectorAll(".preset-chip"), function (chip, idx) {
+            var preset = presets[idx];
+            if (valid && preset && preset.value === num) chip.className = "preset-chip on";
+            else chip.className = "preset-chip";
+          });
         }
 
         function modelSettingsCard(model) {
@@ -938,53 +984,92 @@
             body.appendChild(node("div", "hint warn-text", "该模型在 Cline 官方目录没有独立条目，窗口/输出是兜底默认值，别当真实能力。"));
           }
           if (model.registered !== true) {
-            body.appendChild(node("div", "hint warn-text", "未注册：保存后也不会出现在宿主的模型选择器里，要先勾上「注册进宿主模型选择器」再保存。"));
+            body.appendChild(node("div", "hint warn-text", "未注册：保存后也不会出现在宿主的模型选择器里，要先勾上“注册进宿主模型选择器”再保存。"));
           }
 
-          function field(key, labelText, control) {
-            var row = node("div", "row");
-            row.appendChild(node("label", "wide", labelText));
-            row.appendChild(control);
-            if ((model.edited || []).indexOf(key) >= 0) row.appendChild(pillTag("已改", "warn"));
+          var stack = node("div", "model-stack");
+
+          function addField(labelText, control, editedKey) {
+            var row = node("div", "model-field");
+            row.appendChild(node("label", "field-label", labelText));
+            var wrap = node("div", "field-control");
+            wrap.appendChild(control);
+            if (editedKey && (model.edited || []).indexOf(editedKey) >= 0) wrap.appendChild(pillTag("已改", "warn"));
+            row.appendChild(wrap);
             return row;
           }
-
-          var grid = node("div", "grid2");
-          var left = node("div");
-          var right = node("div");
 
           var registered = node("input");
           registered.type = "checkbox";
           registered.dataset.field = "registered";
           registered.checked = model.registered === true;
-          left.appendChild(field("registered", "注册进宿主模型选择器", registered));
+          stack.appendChild(addField("注册进宿主模型选择器", registered, "registered"));
 
-          var context = node("input");
-          context.type = "number";
-          context.dataset.field = "contextWindow";
-          context.min = String(LIMITS.contextWindow.min);
-          context.max = String(LIMITS.contextWindow.max);
-          context.style.width = "150px";
-          context.value = String(model.contextWindow);
-          left.appendChild(field("contextWindow", "上下文窗口", context));
+          var aliasInput = node("input");
+          aliasInput.type = "text";
+          aliasInput.dataset.field = "alias";
+          aliasInput.placeholder = model.id;
+          aliasInput.maxLength = 60;
+          aliasInput.value = model.name || "";
+          aliasInput.addEventListener("input", function () {
+            var hint = aliasInput.parentNode ? aliasInput.parentNode.querySelector(".hint") : null;
+            if (hint) hint.textContent = aliasInput.value.length + "/60";
+          });
+          var aliasWrap = node("div");
+          aliasWrap.appendChild(aliasInput);
+          var aliasHint = node("div", "hint", aliasInput.value.length + "/60 · 对应 manifest 的 name（宿主落库为 alias），最长 60 字符，宿主会截断");
+          aliasWrap.appendChild(aliasHint);
+          stack.appendChild(addField("显示名（别名）", aliasWrap, "name"));
 
-          var maxTokens = node("input");
-          maxTokens.type = "number";
-          maxTokens.dataset.field = "maxTokens";
-          maxTokens.min = String(LIMITS.maxTokens.min);
-          maxTokens.max = String(LIMITS.maxTokens.max);
-          maxTokens.style.width = "150px";
-          maxTokens.value = String(model.maxTokens);
-          left.appendChild(field("maxTokens", "最大输出", maxTokens));
+          var cwChips = node("div", "preset-chips");
+          CW_PRESETS.forEach(function (preset) {
+            var chip = node("button", "preset-chip", preset.label);
+            chip.type = "button";
+            if (Number(model.contextWindow) === preset.value) chip.className = "preset-chip on";
+            chip.onclick = function () { cwInput.value = String(preset.value); syncPresetHighlight(cwInput, cwChips, CW_PRESETS); };
+            cwChips.appendChild(chip);
+          });
+          var cwInput = node("input");
+          cwInput.type = "number";
+          cwInput.dataset.field = "contextWindow";
+          cwInput.min = String(LIMITS.contextWindow.min);
+          cwInput.max = String(LIMITS.contextWindow.max);
+          cwInput.value = String(model.contextWindow);
+          cwInput.addEventListener("input", function () { syncPresetHighlight(cwInput, cwChips, CW_PRESETS); });
+          var cwControl = node("div");
+          cwControl.appendChild(cwChips);
+          cwControl.appendChild(cwInput);
+          stack.appendChild(addField("上下文窗口", cwControl, "contextWindow"));
+
+          var maxChips = node("div", "preset-chips");
+          MAX_PRESETS.forEach(function (preset) {
+            var chip = node("button", "preset-chip", preset.label);
+            chip.type = "button";
+            if (Number(model.maxTokens) === preset.value) chip.className = "preset-chip on";
+            chip.onclick = function () { maxInput.value = String(preset.value); syncPresetHighlight(maxInput, maxChips, MAX_PRESETS); };
+            maxChips.appendChild(chip);
+          });
+          var maxInput = node("input");
+          maxInput.type = "number";
+          maxInput.dataset.field = "maxTokens";
+          maxInput.min = String(LIMITS.maxTokens.min);
+          maxInput.max = String(LIMITS.maxTokens.max);
+          maxInput.value = String(model.maxTokens);
+          maxInput.addEventListener("input", function () { syncPresetHighlight(maxInput, maxChips, MAX_PRESETS); });
+          var maxControl = node("div");
+          maxControl.appendChild(maxChips);
+          maxControl.appendChild(maxInput);
+          stack.appendChild(addField("最大输出", maxControl, "maxTokens"));
 
           var images = node("input");
           images.type = "checkbox";
           images.dataset.field = "supportsImages";
           images.checked = model.supportsImages === true;
-          left.appendChild(field("supportsImages", "支持图片输入", images));
+          stack.appendChild(addField("支持图片输入", images, "supportsImages"));
 
-          var levelsRow = node("div", "row");
-          levelsRow.appendChild(node("label", "wide", "思考档位"));
+          var levelsRow = addField("思考档位", node("div"), "thinkingLevels");
+          var levelsWrap = levelsRow.querySelector(".field-control");
+          levelsWrap.textContent = "";
           var levels = node("div", "levels");
           LEVELS.forEach(function (level) {
             var wrap = node("label");
@@ -992,45 +1077,82 @@
             box.type = "checkbox";
             box.dataset.level = level;
             box.checked = (model.thinkingLevels || []).indexOf(level) >= 0;
+            if (box.checked) wrap.className = "is-on";
             wrap.appendChild(box);
             wrap.appendChild(node("span", null, level));
+            box.onchange = function () {
+              if (box.checked) wrap.className = "is-on"; else wrap.className = "";
+            };
             levels.appendChild(wrap);
           });
-          levelsRow.appendChild(levels);
-          if ((model.edited || []).indexOf("thinkingLevels") >= 0) levelsRow.appendChild(pillTag("已改", "warn"));
-          right.appendChild(levelsRow);
+          levelsWrap.appendChild(levels);
+          var lvlHint = node("div", "hint", "至少勾一项，且必须包含 off（网关需要 off 才能真正关掉思考，否则为假开关）。");
+          levelsWrap.appendChild(lvlHint);
+          if ((model.edited || []).indexOf("thinkingLevels") >= 0) levelsWrap.appendChild(pillTag("已改", "warn"));
+          stack.appendChild(levelsRow);
 
+          var defaultWrap = node("div");
           var defaultLevel = node("select");
           defaultLevel.dataset.field = "defaultThinkingLevel";
-          right.appendChild(field("defaultThinkingLevel", "默认档位", defaultLevel));
+          defaultWrap.appendChild(defaultLevel);
+          var defHint = node("div", "hint", "候选为已勾选档位；有非 off 档位时会额外提供 omit（不发送思考字段）。");
+          defaultWrap.appendChild(defHint);
+          stack.appendChild(addField("默认档位", defaultWrap, "defaultThinkingLevel"));
 
-          /** The dropdown may only offer levels that are ticked right now. */
           function refreshLevelChoices() {
-            var candidates = checkedLevels(entry);
+            var candidates = checkedLevels(levels);
+            var hasNonOff = candidates.some(function (lv) { return lv !== "off"; });
+            var list = candidates.slice();
+            if (hasNonOff && list.indexOf("omit") < 0) list.push("omit");
             var previous = defaultLevel.value;
             defaultLevel.textContent = "";
-            candidates.forEach(function (level) {
+            list.forEach(function (level) {
               var option = document.createElement("option");
               option.value = level;
-              option.textContent = level;
+              option.textContent = level === "omit" ? "omit（不发送思考字段）" : level;
               defaultLevel.appendChild(option);
             });
-            if (candidates.indexOf(previous) >= 0) defaultLevel.value = previous;
-            else if (candidates.indexOf(model.defaultThinkingLevel) >= 0) defaultLevel.value = model.defaultThinkingLevel;
-            defaultLevel.disabled = candidates.length === 0;
+            if (list.indexOf(previous) >= 0) defaultLevel.value = previous;
+            else if (list.indexOf(model.defaultThinkingLevel) >= 0) defaultLevel.value = model.defaultThinkingLevel;
+            else if (list.length > 0) defaultLevel.value = list[0];
+            defaultLevel.disabled = list.length === 0;
           }
           Array.prototype.forEach.call(levels.querySelectorAll("input[data-level]"), function (box) {
-            box.onchange = refreshLevelChoices;
+            var prev = box.onchange;
+            box.addEventListener("change", function () {
+              if (box.checked) box.parentNode.className = "is-on"; else box.parentNode.className = "";
+              refreshLevelChoices();
+            });
           });
           refreshLevelChoices();
 
-          grid.appendChild(left);
-          grid.appendChild(right);
-          body.appendChild(grid);
+          var hostBox = node("div", "host-only");
+          hostBox.appendChild(node("div", "host-only-title", "宿主专有能力（插件 provider 无法声明）"));
+          hostBox.appendChild(node("div", "hint", "插件的 manifest 只能声明 7 个字段（id、name、contextWindow、maxTokens、supportsImages、thinkingLevels、defaultThinkingLevel），其余字段即使写进 manifest，宿主的 host-core 在反序列化成定长结构时也会丢掉，所以这里只作说明，不提供开关。"));
+          var hostGrid = node("div", "host-only-grid");
+          function roItem(text, checked) {
+            var span = node("span", "host-only-item");
+            var cb = node("input");
+            cb.type = "checkbox";
+            cb.disabled = true;
+            cb.checked = checked === true;
+            span.appendChild(cb);
+            span.appendChild(document.createTextNode(" " + text));
+            return span;
+          }
+          hostGrid.appendChild(roItem("思考协议：标准(legacy) / 自适应(adaptive)（宿主专有，只读）", false));
+          hostGrid.appendChild(roItem("PDF 文档（supportsDocuments）", false));
+          hostGrid.appendChild(roItem("可供 AI 自动调度（availableForSubagents）", false));
+          hostGrid.appendChild(roItem("原生联网搜索（nativeWebSearch）", false));
+          hostGrid.appendChild(roItem("设为生图模型（宿主专有）", false));
+          hostBox.appendChild(hostGrid);
+          stack.appendChild(hostBox);
+
+          body.appendChild(stack);
 
           var actions = node("div", "row");
           var save = node("button", "primary", "保存模型参数");
-          save.onclick = function () { saveModel(this, entry, model); };
+          save.onclick = function () { saveModel(this, entry, model, levels, cwChips, maxChips, aliasInput, cwInput, maxInput, defaultLevel); };
           var restore = node("button", null, "恢复官方值");
           restore.onclick = function () { restoreModel(this, model); };
           actions.appendChild(save);
@@ -1041,7 +1163,6 @@
           entry.appendChild(body);
           return entry;
         }
-
         function renderModelSettings(force) {
           var host = document.getElementById("model-settings-list");
           var status = state.status;
@@ -1066,20 +1187,27 @@
           Object.keys(cards).forEach(function (id) { host.removeChild(cards[id]); });
         }
 
-        function formValues(entry) {
+        function formValues(entry, levels) {
           var field = function (name) { return entry.querySelector('[data-field="' + name + '"]'); };
+          var aliasEl = field("alias");
           return {
             registered: field("registered").checked === true,
+            alias: aliasEl ? aliasEl.value : "",
             contextWindow: Math.floor(Number(field("contextWindow").value)),
             maxTokens: Math.floor(Number(field("maxTokens").value)),
             supportsImages: field("supportsImages").checked === true,
-            thinkingLevels: checkedLevels(entry),
+            thinkingLevels: checkedLevels(levels || entry),
             defaultThinkingLevel: field("defaultThinkingLevel").value,
           };
         }
 
         /** Local guard, so an impossible value is a sentence instead of a silent drop. */
-        function formProblem(next, model) {
+        function formProblem(next, model, aliasInput) {
+          var alias = (next.alias || "").trim();
+          if (alias.length > 60) {
+            if (aliasInput) flashField(aliasInput, "显示名最多 60 字符（宿主会截断，已超 " + alias.length + "）");
+            return model.id + "：显示名最多 60 字符（已 " + alias.length + "）。没有提交。";
+          }
           if (!Number.isFinite(next.contextWindow) || next.contextWindow < LIMITS.contextWindow.min || next.contextWindow > LIMITS.contextWindow.max) {
             return model.id + "：上下文窗口要填 " + LIMITS.contextWindow.min + "~" + LIMITS.contextWindow.max + " 的整数（宿主用它算提示词预算）。没有提交。";
           }
@@ -1088,7 +1216,10 @@
           }
           if (next.thinkingLevels.length === 0) return model.id + "：思考档位至少勾一项。没有提交。";
           if (next.thinkingLevels.indexOf("off") < 0) return model.id + "：思考档位必须包含 off（否则这个模型永远关不掉思考）。没有提交。";
-          if (next.thinkingLevels.indexOf(next.defaultThinkingLevel) < 0) return model.id + "：默认档位只能从勾选的档位里选。没有提交。";
+          var hasNonOff = next.thinkingLevels.some(function (lv) { return lv !== "off"; });
+          if (next.defaultThinkingLevel === "omit") {
+            if (!hasNonOff) return model.id + "：omit 需要至少一个非 off 档位。没有提交。";
+          } else if (next.thinkingLevels.indexOf(next.defaultThinkingLevel) < 0) return model.id + "：默认档位只能从勾选的档位或 omit 里选。没有提交。";
           return "";
         }
 
@@ -1096,11 +1227,21 @@
           return Object.keys(patch).filter(function (key) { return key !== "action" && key !== "model"; });
         }
 
-        function saveModel(button, entry, model) {
-          var next = formValues(entry);
-          var problem = formProblem(next, model);
+        function saveModel(button, entry, model, levels, cwChips, maxChips, aliasInput, cwInput, maxInput, defaultLevel) {
+          var next = formValues(entry, levels);
+          var problem = formProblem(next, model, aliasInput);
           if (problem) { log(problem); return; }
+          var aliasTrim = (next.alias || "").trim();
           var patch = { action: "setModel", model: model.id };
+          if (aliasTrim !== "" && aliasTrim !== model.name) {
+            if (aliasTrim.length === 0) { flashField(aliasInput, "显示名不能为空，已保留原值"); }
+            else patch.name = aliasTrim;
+          } else if (aliasTrim === "" && aliasInput) {
+            // empty means keep original, do not submit; flash
+            if ((aliasInput.value || "").trim() === "" && model.name) {
+              flashField(aliasInput, "显示名为空，已保留原值“" + model.name + "”");
+            }
+          }
           if (next.registered !== model.registered) patch.registered = next.registered;
           if (next.contextWindow !== model.contextWindow) patch.contextWindow = next.contextWindow;
           if (next.maxTokens !== model.maxTokens) patch.maxTokens = next.maxTokens;
@@ -1109,7 +1250,7 @@
           if (next.defaultThinkingLevel !== model.defaultThinkingLevel) patch.defaultThinkingLevel = next.defaultThinkingLevel;
           var keys = patchKeys(patch);
           if (keys.length === 0) {
-            log(model.id + "：没有改动，没有提交（被覆盖过的字段会标「已改」）。");
+            log(model.id + "：没有改动，没有提交（被覆盖过的字段会标“已改”）。");
             return;
           }
           log(model.id + "：提交 " + keys.join("、"));
@@ -1555,8 +1696,8 @@
             // 而是那把密钥插件读不到。
             var none =
               quotaHiddenHosts() > 0
-                ? "官方额度只认插件读得到密钥的账号：模型设置页那把密钥（host）只活在请求内存里，读不到，所以这里没得查。到「账号池」添加一个 Cline API Key，再点「刷新」。"
-                : "还没有内联账号：先到「账号池」添加一个 Cline API Key，再点「刷新」。";
+                ? "官方额度只认插件读得到密钥的账号：本 provider 为 authKind: none，宿主的占位密钥会被忽略。到「账号池」添加内联 Cline API Key，再点「刷新」。"
+                : "还没有内联账号：先到「账号池」添加一个 Cline API Key，再点「刷新」。本 provider 无需在宿主设置里填密钥。";
             body.appendChild(node("div", "quota-muted", none));
             return;
           }

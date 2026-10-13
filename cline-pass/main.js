@@ -1,5 +1,5 @@
 /**
- * pi.cline-pass - PI-Desktop entry.
+ * cline-pass - PI-Desktop entry.
  *
  * This is the port of the DSH plugin `dsh-cline-pass` (0.2.5-p3, MIT) to
  * PI-Desktop. The harness seam it used to own (an LLM provider route) does not
@@ -18,7 +18,7 @@
  * (the gateway must outlive any panel), `agent.tool.register` (the tools),
  * `ui.panel` (the panel), `notify` (startup failures).
  *
- * @module pi.cline-pass
+ * @module cline-pass
  */
 'use strict'
 
@@ -75,7 +75,7 @@ function createLogger(dataDir) {
     const line = `${new Date().toISOString()} [${failed ? level ?? 'error' : 'info'}] ${message}${detail === undefined ? '' : ` ${JSON.stringify(detail)}`}\n`
     if (failed) {
       try {
-        process.stderr.write(`[pi.cline-pass] ${line}`)
+        process.stderr.write(`[cline-pass] ${line}`)
       } catch {
         /* a closed stderr must not break the gateway */
       }
@@ -121,7 +121,7 @@ function failure(error) {
 const TOOL_SPECS = {
   cline_pass_status: {
     description:
-      'Cline Pass 本地网关状态（pi.cline-pass 插件）：端口、上游 baseUrl、账号池（含冷却与掩码后的 key 提示）、每个模型的 pin 配置与已探测到的通道、并发与超时设置、最近请求条数。只读。',
+      'Cline Pass 本地网关状态（cline-pass 插件）：端口、上游 baseUrl、账号池（含冷却与掩码后的 key 提示）、每个模型的 pin 配置与已探测到的通道、并发与超时设置、最近请求条数。只读。',
     risk: 'low',
     schema: { type: 'object', properties: {} },
   },

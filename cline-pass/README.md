@@ -26,7 +26,7 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 
 ### 1 · 加载
 
-插件页 → **Load development plugin** → 指向本目录（`D:\Pi\Chat\plugins\pi.cline-pass`）。保存文件即热重载。
+插件页 → **Load development plugin** → 指向本目录（`D:\Pi\Chat\plugins\cline-pass`）。保存文件即热重载。
 本插件申请 `provider.register`、`agent.tool.register`（高危，需要你显式批准）、`background.service`、`ui.panel`、`notify`；
 若之后改了 `permissions`，先移除再重新加载（开发插件的权限以首次批准为上限，宿主会拒绝热重载）。
 
@@ -34,14 +34,18 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 
 命令面板里 `Cline Pass：打开管理面板`（命令 id `cline-pass.open`），或插件页的面板。
 
-### 3 · 给 key（两种可以混用，账号池会轮转）
+### 3 · 给 key（密钥全部由本插件管，宿主侧不用填）
 
-- 模型设置页里给这个 provider 填 Cline API Key → 作为 `host` 账号参与，**只在当次请求的内存里用，不落盘**；
-- 面板「账号池」里加 `inline` 账号（key 写进插件数据目录的 `config.json`）。表里每行都有**编辑**：改账号名 / 显示名 / 换 key
-  （**key 留空 = 不改动**）/ 停用启用。
-  - 模型设置页里填的那把 key 会以 `host` 账号参与轮转，但它**不列在账号池表里**：它的 key 只在当次请求的内存里，
-    插件既读不到也改不了（报头的「内联账号 N + host」会说明它还在不在）。
-  没有「读环境变量」那种账号：宿主给插件进程的是**最小环境**（`PATH`/`TEMP`/`HOME` 一类 + `PI_PLUGIN_ID`），
+这个 provider 声明的是 `authKind: "none"`（**无宿主密钥**）—— 这不是随手写的：PI-Desktop 的模型选择器只列
+`enabled && (hasSecret || authKind === "none")` 的 provider，而本插件的 key 存在自己的数据目录里、宿主看不见，
+声明成 `api_key` 会让**整条 provider 从模型选择器里消失**（真机踩过，证据见下文「验证状态」）。
+
+- 面板「账号池」里加**内联账号**（key 写进插件数据目录的 `config.json`）：可以放多个，轮转 + 失败冷却。
+  表里每行都有**编辑**：改账号名 / 显示名 / 换 key（**key 留空 = 不改动**）/ 停用启用。
+- 宿主对这个 provider 不再显示密钥输入框；它仍会在每个请求上带一个占位 bearer（`pi-desktop-no-auth`），
+  插件把它当成「宿主没有 key」忽略，绝不会拿它去请求 Cline。
+- 向前兼容：若哪天宿主真的发来一把 key（非占位串），插件仍会把它当 `host` 账号在当次请求里使用，不落盘。
+- 没有「读环境变量」那种账号：宿主给插件进程的是**最小环境**（`PATH`/`TEMP`/`HOME` 一类 + `PI_PLUGIN_ID`），
   取不到你自己设的变量，所以这个来源已去掉（传 `source=env` 会被明确拒绝）。
 
 ### 4 · 摸通道
@@ -110,8 +114,8 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 - **账号池一次只看一个账号**：标题是 `官方额度 · N 个账号`（单账号则是 `官方额度 · 账号 <名字>`），
   名字行给 `‹ 名字 [当前] 第 i / n 个 ›`；翻页纯本地 —— 一次读取已经把整个池读回来了，箭头不发请求。
   「当前」只在该账号是单选模式的 active 账号时出现（轮询模式下每个请求都在换，标了就是假话）。
-- **`host` 账号不列在这里**（和「账号池」表一致）：模型设置页那把 key 只活在请求内存里，面板这座桥拿不到它，
-  列出来永远只能是一行「读不到」，所以直接不列 —— 标题里的账号数也只数内联账号。
+- **`host` 账号不列在这里**（和「账号池」表一致）：它只在宿主真发来一把 key 时才存在，而那把 key 只活在当次请求
+  的内存里 —— 面板这座桥拿不到它，列出来永远只能是一行「读不到」，所以直接不列；标题里的账号数也只数内联账号。
   真有一个账号读不到时，行内是一句短中文（`暂时读不到官方额度。密钥被官方拒绝了（HTTP 401）。` /
   `连不上官方接口。` / `这个账号现在没有密钥。` …），网关与上游的英文原文挂在 `title` 上（鼠标停一下能看全），
   灰字不上色；整个池读不到时只有一句 `暂时读不到官方额度。`，重试就是标题行那个「刷新」按钮，不再另给一个。
@@ -133,11 +137,12 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 | 内容 | 位置 |
 | --- | --- |
 | 配置 / 账号 / pin | `%USERPROFILE%\.pi-desktop\plugins\data\io.github.duya07.cline-pass\config.json`（写入 0600；Windows 上权限位可能被忽略，文件仍在用户目录内） |
-| 插件日志 | 同目录 `gateway.log`（上限 512 KB，超出即清空重写），同时打到 stderr，宿主 `plugin.log` 里带 `[pi.cline-pass]` 前缀 |
+| 插件日志 | 同目录 `gateway.log`（上限 512 KB，超出即清空重写），同时打到 stderr，宿主 `plugin.log` 里带 `[cline-pass]` 前缀 |
 | 用量账本 | 同目录 `usage.jsonl`（超过 2 MB 轮转为 `usage.1.jsonl`）：模型/通道/账号/token/成本/耗时，不含任何请求正文 |
 | manifest 备份 | 同目录 `manifest.backup.json`（面板改参数前的上一版 manifest） |
 
-- 模型设置页里填的 key 只作请求内存使用，不写盘；面板与工具只回显掩码提示（`maskKey`），日志不打印 key。
+- 内联账号的 key 只写进插件数据目录的 `config.json`（宿主看不到）；宿主若发来一把真实 bearer，只在当次请求的内存里用、不写盘。
+  面板与工具只回显掩码提示（`maskKey`），日志不打印 key。
 - 上游流量只发往面板里配置的 `baseUrl`（默认 `https://api.cline.bot/api/v1`）。传输层用 Node 全局 `fetch`；
   宿主对 `pi.net.*` 的出口域名白名单不在这条路径上。
 - 请求历史只记模型 / 命中通道 / 账号名 / 状态 / 耗时 / token / 备注。
@@ -185,6 +190,9 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
 | 插件进程只继承最小环境（`PATH`/`TEMP`/`HOME`/… + `PI_PLUGIN_ID`、`NODE_ENV`） | 不提供读环境变量的账号来源 |
 | onLoad 15 秒、其余 hook 5 秒；onLoad 抛错会让整个加载回滚 | 端口被占用只记录 + 弹通知，不抛错 |
 | `PluginCheck` 校验清单与打包规则，但不校验渲染期字段形态 | 另加形态守卫测试（见下） |
+| 模型选择器只列 `enabled && (hasSecret \|\| authKind === "none")` 的 provider（`SettingsPage` / `ComposerPermissionPicker` 的 `be()`） | provider 声明 `authKind: "none"`：key 全在插件自己的 `config.json` 里，声明 `api_key` 会让整条 provider 从选择器消失 |
+| 插件模型的 manifest 字段只有 7 个会被 host-core 落库：`id` / `name`(→`alias`) / `contextWindow` / `maxTokens` / `supportsImages` / `thinkingLevels` / `defaultThinkingLevel` | 面板模型卡只给这 7 个开关；`thinkingProtocol` / `supportsDocuments` / `availableForSubagents` / `nativeWebSearch` / 来源标记 / 生图这些宿主专有字段只作只读说明，不给假开关 |
+| 插件 provider 行只在宿主启动 / 插件安装 / 启用时写一次（host-core 的 `providers.rs`），开发热重载**不**刷新 | 面板写明「改完注册范围请把本插件停用再启用」，不假装保存即生效 |
 
 ---
 
@@ -232,14 +240,44 @@ manifest 里的 `contributes.providers[0]` 整体刷回该行的 `config_json`�
     面板会只列 2 个内联账号。顺带确认用户在面板里改 key 生效了：两行掩码已不同（掩码只回前 6 + 后 4 位，形如 `sk_aaa***1111`），`duplicate:false`，
     读数各自独立（21/36/18% 与 0/100/84%）。
 
+18. **整条 provider 从模型选择器里消失（真机+宿主代码定位）**：用户截图 `Cline Pass（本地网关）` 那一行挂着「尚未设置 API 密钥」，
+    而模型列表里根本选不到。根因不是面板也不是网关照，而是**宿主的选择器门槛**：
+    `SettingsPage` 的徽章条件是 `!hasSecret && authKind !== "none"`，模型选择器（`ComposerPermissionPicker` / `listReadyPluginModels`）
+    只列 `enabled && (hasSecret || authKind === "none")` 的 provider —— 插件把 key 存在自己的 `config.json` 里、宿主 `secret_ref` 永远是 NULL，
+    于是 5 个模型虽然已经落进 `providers.config_json`，却整条被过滤掉。修法：provider 声明改成 `authKind: "none"`，
+    同时插件把宿主发来的占位 bearer（`pi-desktop-no-auth`）当成「没有 key」忽略，不再拿它去请求 Cline。
+    测试先红后绿（回退 `keyFor` 那一行时该用例报 `actual: 200, expected: 502`，证明它真的在守这条路径）。
+19. **模型卡按宿主「模型设置」页对齐，并说清哪些字段插件根本声明不了**：官方那屏的 13 个字段里，
+    **插件 provider 只有 7 个会被 host-core 落库**（`id` / `name`→`alias` / `contextWindow` / `maxTokens` / `supportsImages` / `thinkingLevels` / `defaultThinkingLevel`）——
+    实测宿主库里我们这行的 `config_json.models[0]` 恰好就是这 7 个键，且 `name` 被改写成 `alias`。
+    所以面板模型卡补齐了官方那套交互（上下文窗口预设 `128k/256k/312k/500k/1M`、最大输出预设 `4k/8k/16k/32k/128k`、
+    7 个思考等级 chips、默认档位下拉含 `omit`）、并把 `thinkingProtocol` / `supportsDocuments` / `availableForSubagents` /
+    `nativeWebSearch` / 生图这些**宿主专有**字段放成只读说明，不给假开关。
+20. **模型卡按官方那屏重做**（前端由 Kimi K3 实现，我复核）：单列「左标签 + 右控件」；上下文窗口与最大输出各配一套预设 chips
+    （`128k/256k/312k/500k/1M`、`4k/8k/16k/32k/128k`，点 chip 填值并高亮）；7 个思考等级做成 chips；新增「显示名（别名）」；
+    默认档位下拉补 `omit`；宿主专有的 5 项（思考协议 / PDF / 自动调度 / 联网搜索 / 生图）单独成块且**只读**。
+    - 用户报的「默认档位点不开」根因：`refreshLevelChoices()` 在卡片挂进 DOM **之前**就从**卡片根节点**查复选框 → 查到 0 个 →
+      选项为空且 `disabled = true`。改成从本地 `.levels` 容器读，并用新断言器回归锁死。
+    - **Kimi 的实现里有两处是死的，我在后端补上了**：`patch.name`（别名）与 `defaultThinkingLevel: "omit"` 原本会被
+      `sanitizeSettings` 丢掉（白名单只认那几个键，`effectiveModels` 还要求默认档位必须在 `thinkingLevels` 里）——
+      现在两者都保留（别名 trim + 截断 60 字符，`published.name` 供对照），并补了单测（先红后绿）。
+    - 新增 `test/render-model-card.cjs`：60 条断言跑在假 DOM 上（从 `renderer/index.html` 现抽模型卡整块），
+      并对实现副本注入 **6 处故障 —— 全部转红**（候选改回根节点查找 → 20 条失败；chip 不再高亮；`off` 校验被跳过；别名写成 `patch.alias` …），
+      证明断言不空转。
+21. **命名规范化与仓库收尾**：插件目录 `pi.cline-pass` → `cline-pass`（`git mv`；插件 id 与数据目录仍走 `io.github.duya07.cline-pass`，未变），
+    全目录 `pi.cline-pass` 引用清零（13 个文件 20 处：JSDoc 模块名、stderr 前缀、health 载荷的 `plugin` 值、工具描述、README 路径）；
+    根 README 把 `pi.transcript-doctor` 标为**已废弃**（宿主 v0.19.1 已修复）、`cline-pass` 行与徽章换成新目录名、TIP 里
+    「宿主侧填密钥」改成 `authKind: "none"` 的正确说法；GitHub 仓库描述补了一句。
+
 ---
 
 ## ✅ 自测
 
 ```powershell
-cd D:\Pi\Chat\plugins\pi.cline-pass
-node --test test/gateway.test.mjs      # Windows 下必须给文件路径；45 项
+cd D:\Pi\Chat\plugins\cline-pass
+node --test test/gateway.test.mjs      # Windows 下必须给文件路径；47 项
 node test/render-quota.cjs             # 面板额度卡片：63 条断言，不需要浏览器
+node test/render-model-card.cjs        # 面板模型参数卡：60 条断言（含「默认档位点不开」回归）
 node test/panel-wiring.cjs             # 面板接线：脚本要的 id/class 是否都还在
 ```
 
@@ -261,7 +299,7 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
 | --- | --- | --- |
 | 接法 | LLM adapter 直接挂进请求链 | 声明 provider → 本机网关（`src/gateway.js`）承载同一条请求路径 |
 | 思考档位 | DSH 词表 | PI 词表（`off/minimal/low/medium/high/xhigh/max`）；宿主发 `reasoning_effort`，`off` → 删掉该字段 |
-| 密钥 | DSH 配置 | 插件数据目录 `config.json` + 模型设置页的 host key（内存） |
+| 密钥 | DSH 配置 | 插件数据目录 `config.json`（内联账号，可多个轮转）；provider 声明 `authKind: "none"`，宿主侧不填密钥 |
 | 面板桥 | DSH 面板通道 | `skill.setEnabled` + `payload.action` |
 | 官方额度 | 面板直接读 | 同一接口、同一显示口径（已用 % + `usageColor` 三档 + ‹ › 翻页 + 灰字错误），多一层按账号逐读与 60 秒缓存，缺百分比降级显示而不是补 0 |
 
@@ -273,9 +311,9 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
 
 - 已验证（真机）：插件在 PI-Desktop 里加载并持续使用；`development.plugin.reloaded` 多次 `ok:true`、网关 `health` 正常；
   真实请求走通（非流式 `200`、`provider=deepseek`、`reasoning` 保留、`usage` 有值）；
-  源码 10 个 JS + `main.js` + 3 个测试脚本过 `node --check`；`node --test test/gateway.test.mjs` **45/45**；`node test/panel-wiring.cjs` 通过（56 个 id、全部 class 有样式、`<style>` 花括号平衡、v2 chrome meta 与标题栏变量还在）；
+  源码 10 个 JS + `main.js` + 4 个测试脚本过 `node --check`；`node --test test/gateway.test.mjs` **47/47**；`node test/panel-wiring.cjs` 通过（56 个 id、全部 class 有样式、`<style>` 花括号平衡、v2 chrome meta 与标题栏变量还在）；
   渲染层 63 条离线断言（`node test/render-quota.cjs`：从 `renderer/index.html` 现抽脚本、喂假 DOM 跑额度卡片，
-  口径逐条对照 DSH 原版 `UsageCard`）全过；
+  口径逐条对照 DSH 原版 `UsageCard`）+ 模型卡 60 条（`node test/render-model-card.cjs`）全过；
   `PluginCheck` 无 error（1 条 warning：`provider.register` / `agent.tool.register` 属高危权限，需你在加载时批准）；
   清单字段形态与宿主限额按 0.19.1 随应用发布的开发说明 + 宿主实现 + 21 个已装/内置 manifest 逐项对照。
 - 已验证（宿主库只读核对）：插件 provider 行由**宿主核心在启动 / 插件安装启用时**同步写入，开发热重载**不**刷新它

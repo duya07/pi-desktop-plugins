@@ -12,7 +12,7 @@
  * Nothing here invents a number. A window the gateway did not report is absent,
  * and a percentage it did not send is not turned into a guess.
  *
- * @module pi.cline-pass/quota
+ * @module cline-pass/quota
  */
 'use strict'
 

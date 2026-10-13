@@ -1,6 +1,6 @@
 # PI-Desktop Plugins
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE) [![pi.cline-pass](https://img.shields.io/badge/pi.cline--pass-1.0.0-blue)](./pi.cline-pass/) [![PI-Desktop](https://img.shields.io/badge/PI--Desktop-compatible-lightgrey)](https://github.com/vastsa/PI-Desktop)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE) [![cline-pass](https://img.shields.io/badge/cline--pass-1.0.0-blue)](./cline-pass/) [![PI-Desktop](https://img.shields.io/badge/PI--Desktop-compatible-lightgrey)](https://github.com/vastsa/PI-Desktop)
 
 > 精选 · 独立 · 可发布 — 每个子目录都是一个自带 `manifest.json` 的完整 PI-Desktop 插件，开箱即用，互不依赖。
 
@@ -12,12 +12,12 @@
 
 | 插件 | 版本 | 说明 | 权限 | 关键能力 |
 |---|---|---|---|---|
-| [`pi.transcript-doctor`](./pi.transcript-doctor/) | 0.1.0 | 会话转录索引体检。检查 `.jsonl.layout` 行偏移缓存是否与 `.jsonl` 对得上，脏了就备份并清理，避免 host-core 报 `stream did not contain valid UTF-8` 并卡死持久化队列。纯本地字节比对，零模型调用。 | `ui.panel` · `background.service` · `notify` · `agent.tool.register` | 本地字节比对 · 自动备份清理 · 零模型调用 |
-| [`pi.cline-pass`](./pi.cline-pass/) | 1.0.0 | Cline Pass 订阅接入。插件自带本地 OpenAI 兼容网关（`127.0.0.1:41593`），把声明式 provider 接到同一条请求路径上：账号池与轮转、上游通道枚举与校验、pin/exclude、failover、流式空闲超时、思考档位映射。面板分账号池 / 模型与通道 / 请求历史 / 用量 / 设置五页，含 Cline 官方额度窗口（5 小时 / 本周 / 本月）与 10 个 `cline_pass_*` agent 工具。 | `ui.panel` · `background.service` · `notify` · `agent.tool.register` · `provider.register` | 本地网关 `127.0.0.1:41593` · 账号池轮转/冷却 · 10 个 agent 工具 · 5 模型默认注册 |
+| [`pi.transcript-doctor`](./pi.transcript-doctor/) · **已废弃** | 0.1.0 | **PI-Desktop v0.19.1 已修复该问题，故本插件废弃（2026-10-13）：不再需要、不再维护、不要重新加载或安装。** 原功能：检查 `.jsonl.layout` 行偏移缓存是否与 `.jsonl` 对得上，脏了就备份并清理，避免 host-core 报 `stream did not contain valid UTF-8` 并卡死持久化队列。纯本地字节比对，零模型调用。 | `ui.panel` · `background.service` · `notify` · `agent.tool.register` | 本地字节比对 · 自动备份清理 · 零模型调用 |
+| [`cline-pass`](./cline-pass/) | 1.0.0 | Cline Pass 订阅接入。插件自带本地 OpenAI 兼容网关（`127.0.0.1:41593`），把声明式 provider 接到同一条请求路径上：账号池与轮转、上游通道枚举与校验、pin/exclude、failover、流式空闲超时、思考档位映射。面板分账号池 / 模型与通道 / 请求历史 / 用量 / 设置五页，含 Cline 官方额度窗口（5 小时 / 本周 / 本月）与 10 个 `cline_pass_*` agent 工具。 | `ui.panel` · `background.service` · `notify` · `agent.tool.register` · `provider.register` | 本地网关 `127.0.0.1:41593` · 账号池轮转/冷却 · 10 个 agent 工具 · 5 模型默认注册 |
 | [`pi-think-zh`](./pi-think-zh/) | 0.2.0 | 中文可见推理指引。每轮在 `before_agent_start` 追加明确的语言要求，约束宿主"思考"区里模型已公开返回的 `thinking` / `reasoning` 文字，而不只是最终回答。 | `agent.extension` | `before_agent_start` 注入 · 约束 `thinking`/`reasoning` 语言 |
 
 > [!TIP]
-> `pi.cline-pass` 会注册一个 provider：装好后模型选择器里出现 `cline-pass/*`（默认注册 5 个模型，注册范围可在面板里改）。用之前给它一把 Cline API Key —— 填在模型设置页（只在当次请求的内存里，不落盘），或在插件面板「账号池」里加内联账号（可多个，轮转 + 冷却失败账号）。
+> `cline-pass` 会注册一个 provider：装好后模型选择器里出现 `cline-pass/*`（默认注册 5 个模型，注册范围可在面板里改）。它声明的是 `authKind: "none"` —— **宿主侧不用填密钥**（宿主的选择器会整条隐藏「没有密钥」的 provider，所以插件只能这样声明）；Cline API Key 全部加在插件面板的「账号池」里（可多个，轮转 + 失败冷却）。改完注册范围或模型参数后，到插件页把本插件**停用再启用**（或重启 PI-Desktop），宿主才会重新读一遍 manifest。
 
 ---
 
