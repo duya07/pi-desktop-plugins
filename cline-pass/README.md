@@ -2,7 +2,7 @@
 
 [![version: 1.0.0](https://img.shields.io/badge/version-1.0.0-blue)](./manifest.json) [![license: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/duya07/pi-desktop-plugins/blob/main/LICENSE) [![PI-Desktop](https://img.shields.io/badge/PI--Desktop-0.19.1-compatible-lightgrey)](https://github.com/vastsa/PI-Desktop) [![gateway: 127.0.0.1:41593](https://img.shields.io/badge/gateway-127.0.0.1:41593-orange)](#端口)
 
-> 把 DSH 的 `dsh-cline-pass` 0.2.5-p3 移植到 PI-Desktop。保留内核，换掉外层接法——插件自带只监听本机的 OpenAI 兼容网关，声明式 provider 的每一次请求都落进同一条路径。
+> 把 DSH 的 `dsh-cline-pass` 0.2.5-p3 移植到 PI-Desktop。保留内核，换掉外层接法 —— 插件自带只监听本机的 OpenAI 兼容网关，**你自己那个** provider 的每一次请求都落进同一条路径（插件自己不声明 provider，见下文「生成配置与生效路径」）。
 
 | 维度 | 说明 |
 | --- | --- |
@@ -65,7 +65,7 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 > —— 目录已经记住，这一次是秒写。插件重载后需要重新选一次目录。
 
 > [!NOTE]
-> 为什么要绕这一下：插件声明的 provider 行有两条硬限制 —— ①宿主只维护它认识的 7 个字段，`availableForSubagents`
+> 为什么要绕这一下：插件 provider 行（本插件以前声明的那种）有两条硬限制 —— ①宿主只维护它认识的 7 个字段，`availableForSubagents`
 > 会被**丢弃**（2026-10-13 对照实验：manifest 里写上它、同时把一个宿主必看的 `maxTokens` 改成 384001，
 > 停用→启用后行确实被重写、对照值进去了，而这个字段 5 个模型**全缺**）；②插件行在设置页**没有编辑入口**。
 > 所以插件模型永远进不了委派目录 —— 这也是本插件现在**干脆不声明 provider** 的原因；而**你自己的** provider 没有这两条限制。
@@ -78,7 +78,7 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 ### 6 · 用起来
 
 模型选择器里选 **baseUrl 是 `http://127.0.0.1:41593/v1` 的那个 provider**（也就是上一节导入出来的那个）下的模型。
-注意别和自建的 `api.cline.bot` provider 混了 —— 它们的模型 id 可能一模一样（见下文「认准 baseUrl」）。
+注意和自建的 `api.cline.bot` provider 区分开：导入进来的模型 id 带 `cline-pass-local/` 前缀、直连那条是 `cline-pass/`，**不会再同名**（见下文「认准 baseUrl」）；但选 provider 时仍要认准 baseUrl。
 
 ---
 
@@ -347,13 +347,13 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
     合并时 `...rest` 把 current 的派生字段又铺回去，报告"1 处变化"却写回旧值 —— 已修。
 28. **面板补齐（前端由 Kimi K3 实现，我复核并补文案）**：新增「生成配置（导入到模型配置）」卡片（按钮 / 只读 JSON / 复制 / 四步说明）；
     模型卡与「宿主侧同步状态」行全面改文案（旧措辞会骗人：`注册进宿主模型选择器` → `写进生成的配置`；宿主同步行改成「已导入 N/M」）；
-    保存模型后的提示也从"manifest 已写入"改成"重新生成配置再导入"。新增断言器 `test/render-import-config.cjs`（现 36 条）。
+    保存模型后的提示也从"manifest 已写入"改成"重新生成配置再导入"。新增断言器 `test/render-import-config.cjs`（现 40 条）。
 29. **「写入文件」：插件唯一的写盘动作（用户要求"只允许写这一条路径"）**：用宿主的 `root: "userSelected"` 机制 ——
     第一次点会弹系统目录选择器（选 `~/.pi/agent`），句柄**只活在插件进程内**；`pi.fs.requestDirectory()` 实际校验的是
     **`fs.read`** 权限（在已装宿主包里核实过），所以 manifest 同时声明 `fs.read`（**不给任何 `fs.read` 规则**，不放开任何可读路径）
     与 `fs.write`；`pi.fs.writeText(pathFromRoot, …)` 收的是**相对 root 的路径**，代码因此只传字面量 `models.json`。
     取消选择器 → 一个文件都不写；进程内记住目录，第二次是秒写；**0 个模型时直接拒绝**（不用空清单覆盖用户已有的文件）。
-    面板上还有一句提示：选择器是模态窗口、请在 30 秒内选完，超时就再点一次（秒写）。测试从 71 条加到 **75 条**。
+    面板上还有一句提示：选择器是模态窗口、请在 30 秒内选完，超时就再点一次（秒写）。测试从 71 条加到 **76 条**。
 30. **干脆不声明 provider（用户："第一个这个可以不要喽"）**：`contributes.providers` 与 `provider.register` 权限一起删除；
     端口/地址从 manifest 挪到 `src/protocol.js` 的单一常量（`GATEWAY_PORT` / `GATEWAY_BASE_URL`），
     `manifestPort()` 与 `providerBaseUrl()` 一并删除，`src/` 里再没有任何地方读 `contributes.providers`。
@@ -395,9 +395,9 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
 
 |  | DSH | 这里 |
 | --- | --- | --- |
-| 接法 | LLM adapter 直接挂进请求链 | 声明 provider → 本机网关（`src/gateway.js`）承载同一条请求路径 |
+| 接法 | LLM adapter 直接挂进请求链 | 面板生成配置 → 你自建 provider → 本机网关（`src/gateway.js`）承载同一条请求路径 |
 | 思考档位 | DSH 词表 | PI 词表（`off/minimal/low/medium/high/xhigh/max`）；宿主发 `reasoning_effort`，`off` → 删掉该字段 |
-| 密钥 | DSH 配置 | 插件数据目录 `config.json`（内联账号，可多个轮转）；provider 声明 `authKind: "none"`，宿主侧不填密钥 |
+| 密钥 | DSH 配置 | 插件数据目录 `config.json`（内联账号，可多个轮转）；插件**不声明 provider**，宿主侧没有密钥可填 |
 | 面板桥 | DSH 面板通道 | `skill.setEnabled` + `payload.action` |
 | 官方额度 | 面板直接读 | 同一接口、同一显示口径（已用 % + `usageColor` 三档 + ‹ › 翻页 + 灰字错误），多一层按账号逐读与 60 秒缓存，缺百分比降级显示而不是补 0 |
 
@@ -415,7 +415,7 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
   渲染层 63 条离线断言（`node test/render-quota.cjs`：从 `renderer/index.html` 现抽脚本、喂假 DOM 跑额度卡片，
   口径逐条对照 DSH 原版 `UsageCard`）+ 模型卡 60 条（`node test/render-model-card.cjs`）+ 宿主同步行 25 条
   （`node test/render-host-sync.cjs`：全同步 / 部分同步 / 未同步 / 一条都没注册 / 读不到 / 缺字段 六种状态的文案与类名）全过；
-  `PluginCheck` 无 error（1 条 warning：`provider.register` / `agent.tool.register` 属高危权限，需你在加载时批准）；
+  `PluginCheck` 无 error（1 条 warning：`agent.tool.register` / `fs.write` 属高危权限，需你在加载时批准）；
   清单字段形态与宿主限额按 0.19.1 随应用发布的开发说明 + 宿主实现 + 21 个已装/内置 manifest 逐项对照。
 - 已验证（宿主库只读核对）：插件 provider 行由**宿主核心在启动 / 插件安装启用时**同步写入，开发热重载**不**刷新它
   （见上文「生效路径」；证据：连续 4 次 `ok:true` 热重载后该行 `updated_at` 未变）。
@@ -430,10 +430,10 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
   账本 2 MB 轮转只断言了常量。
 - 本轮已验证（真机数据 + 宿主代码定位）：宿主那行 `plugin:io.github.duya07.cline-pass:cline-pass` 的 `auth_kind` 已经是 `none`、
   `created_at = updated_at`（= 你 17:47 重新加载插件那一刻），5 个模型与档位齐全 —— 「模型选择器里看不到」在宿主侧已经解决，
-  之前那张挂着「尚未设置 API 密钥」的截图是**旧渲染**（徽章条件是 `!hasSecret && authKind !== "none"`，行已改成 `none` 就不会再显示）。
-- 本轮新增（真机待看一眼）：面板的**宿主侧同步状态行**（第 24 条）。它读 `pi.models.list()`，而 `models.list` 属于**扩大 `permissions`**——
+  之前那张挂着「尚未设置 API 密钥」的截图是**旧渲染**。（**后续**：第 30 条把 provider 声明整个删掉后，那行已被宿主回收，选择器里不再有插件那一行。）
+- 本轮新增（真机待看一眼 → **后来已实测**）：面板的**宿主侧同步状态行**（第 24 条）。它读 `pi.models.list()`，而 `models.list` 属于**扩大 `permissions`**——
   开发说明写明热重载不会授予你没批准过的权限，必须**显式重新加载**插件。所以在你重新加载之前，这行会显示灰字
-  「读不到宿主模型清单：…」；重新加载之后应显示「宿主模型已同步：5/5 已注册，模型选择器里可见」。这两种真机状态都还没亲眼看过。
+  「读不到宿主模型清单：…」；重新加载之后显示「宿主模型已同步：N/N 已导入，模型选择器里可见」—— 重新加载后实测 `plugin.api models.list ok:true`（count 64），这一行是通的。
 - 本轮真机观察到（权限门槛确实生效，实测）：插件目录里**任何一次保存**都会让宿主尝试热重载，而因为 manifest 多要了 `models.list`，
   宿主**拒绝**了这次重载 —— `logs\app\plugin.log` 里连着一串 `development.plugin.reloaded ok:false` 与
   `PERMISSION_DENIED: manifest now requests models.list; reload it from the Plugins page to review`（18:31–18:32 本地，多次）。
@@ -465,6 +465,20 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
   `render-import-config` **40**（+4 条：前缀说明文案）、`render-host-sync` 25、`render-model-card` 60、`render-quota` 63、
   `panel-wiring` OK、`node --check` 0 失败。
   **用户侧代价**：旧 provider 里的 id 是旧拼写，要享受前缀必须**删掉重新导入一次**（导入器判重会跳过同名 provider）。
+- 本轮新增（2026-10-14 01:5x，**真机端到端验证通过**）：用户重载插件 + 重新「写入文件」+ 删旧 provider + 重新导入之后，
+  前缀方案在真机上闭环 —— 面板「写入文件」写入 **1704 字节**（旧拼写是 1675），网关日志 `import config written {"bytes":1704,"models":5}`；
+  新 provider `75e44194-…`（baseUrl 指网关、5 模型、`updated_at` 17:52:13），旧的 `2f3e36b3-…` 已删；
+  委派 key 变成 `custom/cline-pass-local/minimax-m3`。
+  用 `custom/cline-pass-local/minimax-m3` 起 explorer（任务：读 `src/protocol.js` 报 `GATEWAY_PORT` / `GATEWAY_BASE_URL`）**返回正确答案**；
+  但"任务完成"不等于走网关，所以核对了账本：`usage.jsonl` 从 5 行增到 **7 行**，两笔都是 `model: "cline-pass/minimax-m3"`
+  （**目录 id** —— 说明网关把 `cline-pass-local/minimax-m3` 剥前缀映射回去了）、`upstream=minimax`、`account=<账号 A>`、
+  `status=200`、2223ms / 2554ms、带成本；`gateway.log` 同期还有 `account benched {"account":"<账号 B>","reason":"QUOTA_EXCEEDED","ms":900000}`
+  （冷却 + failover 又一次真机复现）。宿主转录里该 delegation 记的 `modelId` 是 `cline-pass-local/minimax-m3`（请求的拼写）——
+  请求拼写 → 宿主 provider → 网关映射 → 目录 id → 上游，链路闭合。
+  **撞名消失的对照实验**：再起 `custom/cline-pass-local/deepseek-v4.1-flash`（该模型**没勾**），宿主**明确拒绝** ——
+  `Model "custom/cline-pass-local/deepseek-v4.1-flash" is not available for delegation. Available: …`，
+  而可用列表里 `custom/cline-pass/*`（直连 `api.cline.bot` 那条）与 `custom/cline-pass-local/*`（网关那条）**分成两个命名空间**；
+  修复前同样的请求会被直连那条**静默接走**（`historySize = 0`、账本无新行、任务却显示"完成"）。
 
 ---
 
