@@ -99,9 +99,11 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
   那里可以改（`SettingsPage` 的档位 chips 会写回 `thinkingLevels` / `defaultThinkingLevel`）。
 - 「宿主专有能力」（思考协议 / PDF / 自动调度 / 联网搜索 / 生图）插件写不进生成配置：导入之后到设置页里改，
   其中**「可供 AI 自动调度」就是 `availableForSubagents`**。
+- **生成的模型 id 带 `cline-pass-local/` 前缀**（`cline-pass/deepseek-v4.1-flash` → `cline-pass-local/deepseek-v4.1-flash`）：
+  这是故意的，原因见下面 WARNING 的「子代理侧更隐蔽」——撞的是模型 id，不是 provider 名字。网关两种拼写都认，旧配置照旧可用。
 
 > [!IMPORTANT]
-> **生效路径（实测）**：`importConfigPayload()` 从 manifest 里读回网关地址（`http://127.0.0.1:41593/v1`），
+> **生效路径（实测）**：`importConfigPayload()` 从 `src/protocol.js` 的 `GATEWAY_BASE_URL` 取网关地址（`http://127.0.0.1:41593/v1`），
 > 生成的 JSON 固定包含：`api: "chat_completions"`、`apiKey: "pi-desktop-no-auth"`（占位串，网关忽略它、改用你自己的账号池）、
 > 每个模型一个 `limit`（窗口/输出）、`reasoning: true`、图片模型带 `input: ["text","image"]`。
 > 导入器对**已存在**的 provider（判重规则：同 baseUrl + apiStyle，或同 vendorKey + apiStyle，且密钥一致）会**跳过**，
@@ -118,7 +120,7 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 > 对照组：只在网关 provider 里存在的 `cline-pass/glm-5.3`（且未勾「可供 AI 自动调度」）被宿主**直接拒绝** ——
 > `Model "custom/cline-pass/glm-5.3" is not available for delegation. Available: …` → 说明门禁确实生效，而撞名的那条是另一个 provider。
 > 想让子代理只走网关：把旧直连 provider 里**同名**模型的「可供 AI 自动调度」取消勾选（或直接停用它），再勾上网关 provider 的模型；
-> 否则子代理会悄悄走直连那条，账号池 / pin / failover / 账本全都看不到这部分流量。
+> 否则子代理会悄悄走直连那条，账号池 / pin / failover / 账本全都看不到这部分流量。**插件侧的根治办法见下一节**：生成配置里的模型 id 带 `cline-pass-local/` 前缀，撞名就不存在了；上面这条「取消勾选」只是零代码的临时办法。
 
 ---
 
@@ -365,12 +367,12 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 
 ```powershell
 cd D:\Pi\Chat\plugins\cline-pass
-node --test test/gateway.test.mjs      # Windows 下必须给文件路径；54 项
+node --test test/gateway.test.mjs      # Windows 下必须给文件路径；55 项
 node test/render-quota.cjs             # 面板额度卡片：63 条断言，不需要浏览器
 node test/render-model-card.cjs        # 面板模型参数卡：60 条断言（含「默认档位点不开」回归）
-node test/render-import-config.cjs     # 面板「生成配置」卡片：36 条断言（生成 / 复制 / 写入文件）
+node test/render-import-config.cjs     # 面板「生成配置」卡片：40 条断言（生成 / 复制 / 写入文件 / 模型 id 前缀说明）
 node test/render-host-sync.cjs         # 面板宿主同步行：25 条断言（六种状态）
-node test/host-sync.cjs                # 宿主清单比对 + 写入文件（pi.models.list / pi.fs 桩）：75 条断言
+node test/host-sync.cjs                # 宿主清单比对 + 写入文件（pi.models.list / pi.fs 桩）：76 条断言
 node test/panel-wiring.cjs             # 面板接线：脚本要的 id/class 是否都还在
 ```
 
@@ -447,9 +449,22 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
   `auth_kind = api_key_and_base_url`、5 个模型）；重载后**插件那一行已从宿主库里消失**（`providers` 表里再无 `owner_plugin_id` 非空的行）
   —— 删掉 `contributes.providers` 之后宿主确实回收了旧行，选择器里不会再出现插件那一行。
   委派目录（`<vendor_key>/<modelId>`）里已出现 `custom/cline-pass/minimax-m3`（勾了「可供 AI 自动调度」1/5）。
-  待实测：其余 4 个模型的勾选、面板「写入文件」按钮（`~/.pi/agent/models.json` 目前还是手工写的那份，mtime 未变）、
-  以及那 4 个模型的手改档位（宿主对 `reasoning: true` 硬编码 `off/low/medium/high`，导入格式不带档位阶）。
+  已实测（2026-10-14 01:0x）：面板「写入文件」跑通（`fs.requestDirectory ok:true path="<home>\\.pi\\agent"` + `fs.writeText ok:true`），
+  磁盘文件与 `importConfigPayload()` **逐字节一致**；用户删掉旧 provider 后重新导入，新 id `2f3e36b3-…`（5 个模型，baseUrl 仍指网关）。
+  档位仍是宿主通用那套（用户未手改）；勾选仍只有 `minimax-m3` 一个。
 - 本轮新增（数值来源换成 models.dev）：`src/catalog.js` 14 条按 models.dev 重算（13 条变化），刷新脚本 `tools/sync-catalog.mjs`，幂等复跑 0 变化。
+- 本轮新增（2026-10-14 凌晨，用户拍板）：**生成配置里的模型 id 改带 `cline-pass-local/` 前缀**，网关再做映射 —— 为了消掉
+  委派目录的 key 撞名（见上文 WARNING「子代理侧更隐蔽」）。用户当时的原话是「你确定撞的是模型 id 而不是名字？」——
+  确实是模型 id：委派 key 是 `<vendorKey>/<模型 id>`，用户自建 provider 的 vendorKey 全是 `custom`，provider 显示名根本不进 key，
+  所以「改个 provider 名字」没有用（而且默认名本来就叫「Cline Pass（本地网关）」，早就区分开了，照样撞）。
+  改动：`src/models.js` 新增 `IMPORT_MODEL_PREFIX` / `importModelId()` / `unimportModelId()`，`importConfigPayload()` 用前缀拼 id；
+  `src/gateway.js` 的 `normalizeModelId()` 先剥前缀再查目录，**三种拼写都收**（`cline-pass-local/x`、`cline-pass/x`、宿主的 `x`），
+  落不到任何模型时原样透传（错模型应答比上游报错更糟）。面板「生成配置」卡片与「模型参数」卡片都加了说明（用户要求：别让人以为改了名就路由不回去）。
+  TDD 顺序：先写会红的用例（网关把 `cline-pass-local/…` 原样转发 → `actual: 'cline-pass-local/deepseek-v4.1-flash'`），再改实现。
+  离线验证：`gateway` **55/55**（+1 条：三种拼写 + pin 跟随 + 未知 id 透传）、`host-sync` **76**（+1 条：前缀契约）、
+  `render-import-config` **40**（+4 条：前缀说明文案）、`render-host-sync` 25、`render-model-card` 60、`render-quota` 63、
+  `panel-wiring` OK、`node --check` 0 失败。
+  **用户侧代价**：旧 provider 里的 id 是旧拼写，要享受前缀必须**删掉重新导入一次**（导入器判重会跳过同名 provider）。
 
 ---
 

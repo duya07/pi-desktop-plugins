@@ -17,7 +17,7 @@
 | [`pi-think-zh`](./pi-think-zh/README.md) | 0.2.0 | 中文可见推理指引。每轮在 `before_agent_start` 追加明确的语言要求，约束宿主"思考"区里模型已公开返回的 `thinking` / `reasoning` 文字，而不只是最终回答。 | `agent.extension` | `before_agent_start` 注入 · 约束 `thinking`/`reasoning` 语言 |
 
 > [!TIP]
-> `cline-pass` **不声明任何 provider**，模型选择器里不会出现插件那一行。用法：面板点「生成配置」→ 复制 JSON，或直接点「写入文件」（写 `~/.pi/agent/models.json`）→ 设置页「从其他工具导入」把它建成**你自己的** provider（默认 5 个模型，范围可在面板里改）→ 在那张模型卡里勾 **「可供 AI 自动调度」**（子代理能不能用它就看这一勾；导入格式不带思考档位阶，档位请在那张卡里手改）。
+> `cline-pass` **不声明任何 provider**，模型选择器里不会出现插件那一行。用法：面板点「生成配置」→ 复制 JSON，或直接点「写入文件」（写 `~/.pi/agent/models.json`）→ 设置页「从其他工具导入」把它建成**你自己的** provider（默认 5 个模型，范围可在面板里改）→ 在那张模型卡里勾 **「可供 AI 自动调度」**（子代理能不能用它就看这一勾；导入格式不带思考档位阶，档位请在那张卡里手改）。生成的模型 id 带 `cline-pass-local/` 前缀 —— 宿主给子代理的委派 key 是 `<vendorKey>/<模型 id>`，不加前缀就会和「直连 `api.cline.bot` 的那个 provider」撞名（改 provider 名字没用，key 里没有名字）；网关两种拼写都认。
 > Cline API Key 全部加在插件面板的「账号池」里（可多个，轮转 + 失败冷却）。导入器对**已存在**的 provider 会跳过，之后调参数请在设置页那张卡里改。
 
 ---

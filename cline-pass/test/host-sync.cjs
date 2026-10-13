@@ -190,10 +190,24 @@ async function run() {
     effective.every((model) => typeof model.registered === 'boolean'),
     'every gateway model carries the registered flag the panel filters on',
   )
+  // `effective` is the registry, which keys a model by its catalog id; the generated
+  // payload spells those ids `cline-pass-local/x` (see `src/models.js`), so the
+  // comparison has to be made against what is behind them.
+  const carriedCatalogIds = IDS.map((id) => registry.unimportModelId(id))
   check(
     effective.filter((model) => model.registered).length === IDS.length &&
-      effective.filter((model) => model.registered).every((model) => IDS.includes(model.id)),
+      effective.filter((model) => model.registered).every((model) => carriedCatalogIds.includes(model.id)),
     `the registered models are exactly the ${IDS.length} ids the generated config carries`,
+  )
+  // The whole point of the re-spelling: an imported model id identical to one served
+  // by a provider pointed straight at Cline collides in the host's delegation catalog
+  // (`<vendorKey>/<modelId>`, and every user provider is `custom`). So the prefix is
+  // part of the contract, not a cosmetic detail.
+  check(
+    IDS.every((id) => id.startsWith(registry.IMPORT_MODEL_PREFIX)) &&
+      carriedCatalogIds.every((id) => id.startsWith('cline-pass/')) &&
+      carriedCatalogIds.every((id) => !id.startsWith(registry.IMPORT_MODEL_PREFIX)),
+    'the generated ids carry the import prefix, and the catalog ids behind them are the plain spelling',
   )
   // The panel feeds `generatedModelIds()`, which is built from that same payload:
   // the host-sync row can therefore never report on a different set of ids.

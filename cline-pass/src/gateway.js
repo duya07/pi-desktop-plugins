@@ -38,7 +38,7 @@ const { createStore } = require('./store.js')
 const { createEngine, parseServerSentEvents, GatewayError } = require('./engine.js')
 const { createAccountPool, maskKey, keyFor, duplicateNames } = require('./config.js')
 const { createUsageLog, extractUsage } = require('./usage.js')
-const { effectiveModels, effortsFor, importConfigPayload, describeImportConfig } = require('./models.js')
+const { effectiveModels, effortsFor, importConfigPayload, describeImportConfig, unimportModelId } = require('./models.js')
 const { summarizeLimits, summarizeAccount } = require('./quota.js')
 
 /** Requests may carry base64 images, so the cap is generous - but not absent. */
@@ -55,11 +55,23 @@ const QUOTA_TIMEOUT_MS = 10000
  */
 const LISTEN_PORT = GATEWAY_PORT
 
-/** The model id the upstream expects, accepting the host's own short spelling. */
+/**
+ * The model id the upstream expects.
+ *
+ * Three spellings arrive here: the catalog's own (`cline-pass/x`), the host's short
+ * one (`x`), and the generated config's (`cline-pass-local/x` - `models.js` explains
+ * why the imported ids are re-spelled). All three have to land on the catalog id,
+ * because that is what the pins, the ledger and the model settings are keyed by.
+ *
+ * An id that matches no model is passed through untouched rather than mapped onto
+ * some other model: a wrong model answering is worse than an upstream error.
+ */
 function normalizeModelId(model) {
   const id = String(model ?? '').trim()
   if (id === '') return ''
   if (catalogEntry(id)) return id
+  const imported = unimportModelId(id)
+  if (imported !== null && catalogEntry(imported)) return imported
   const prefixed = `cline-pass/${id.replace(/^cline-pass\//, '')}`
   return catalogEntry(prefixed) ? prefixed : id
 }

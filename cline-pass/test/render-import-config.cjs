@@ -150,5 +150,16 @@ check(PAGE.indexOf('max-height')>=0 && PAGE.indexOf('#config-json')>=0, 'css: #c
 check(PAGE.indexOf('生成配置（导入到模型配置）')>=0, 'markup: card title exists')
 check(PAGE.indexOf('class="generate-steps"')>=0, 'markup: steps list exists')
 
+// The model-id spelling is a contract the user has to be told about. The generated
+// config re-spells ids (`cline-pass-local/x`) so an imported model never collides with
+// one served by a provider pointed straight at Cline. Without this note a user may
+// "fix" the id back to the plain spelling and then wonder why a subagent asking for it
+// is answered by that other provider - or, reading it the other way, assume a renamed
+// id cannot be routed back at all.
+check(PAGE.indexOf('cline-pass-local/')>=0, 'markup: the imported model-id prefix is named')
+check(PAGE.indexOf('两种拼写都认')>=0, 'markup: says the gateway accepts both spellings')
+check(PAGE.indexOf('重命名 provider')>=0 && PAGE.indexOf('没有用')>=0, 'markup: says renaming the provider does not help')
+check(PAGE.indexOf('委派 key')>=0 && PAGE.indexOf('vendorKey')>=0, 'markup: names the delegation key the ids collide on')
+
 console.log('\n'+(failures===0?'ALL '+total+' IMPORT CONFIG CHECKS PASSED':failures+' OF '+total+' IMPORT CONFIG CHECK(S) FAILED'))
 process.exitCode = failures===0?0:1

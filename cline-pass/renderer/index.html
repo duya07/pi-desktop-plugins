@@ -418,6 +418,7 @@
           <div class="card" id="generate-config-card">
             <h3>生成配置（导入到模型配置）</h3>
             <div class="hint">插件不再自动注册模型，用下面这个按钮生成一份 JSON，拿到 PI-Desktop 的 模型配置 →「从其他工具导入」→ 扫描 → 勾选「Cline Pass（本地网关）」→ 导入，就会得到你自己的 provider（可编辑、可勾「可供 AI 自动调度」，子代理才会用它）。网关必须处于运行状态。</div>
+            <div class="hint"><b class="warn-text">生成配置里的模型 id 是 <code>cline-pass-local/&lt;模型&gt;</code>，不是 <code>cline-pass/&lt;模型&gt;</code>。</b>这是故意的：宿主给子代理用的委派 key 是 <code>&lt;vendorKey&gt;/&lt;模型 id&gt;</code>，而你自建的 provider 全都是 <code>custom</code>，所以导入的模型 id 一旦和「直连 <code>api.cline.bot</code> 那条 provider」的模型 id 相同，两条就撞成同一个 key，子代理可能被<b>那条</b>接走（账号池 / pin / failover / 账本都看不到这部分流量）。<b>网关两种拼写都认</b>：<code>cline-pass-local/x</code> 与 <code>cline-pass/x</code> 都路由到同一个模型，所以你手动改回旧拼写、或留着以前生成的配置，都<b>不会</b>路由不回去 —— 只是那时又会和直连那条撞名。重命名 provider <b>没有用</b>：委派 key 里只有 vendorKey 和模型 id，不含 provider 名字。</div>
             <div class="row"><button class="primary" id="generate-config">生成配置</button><button class="primary" id="write-config">写入文件</button><button id="copy-config">复制</button><span class="hint" id="generate-config-meta"></span></div>
             <div class="hint" id="generate-config-path" hidden></div>
             <textarea id="config-json" readonly hidden placeholder="点「生成配置」后这里会出现 JSON"></textarea>
@@ -434,7 +435,7 @@
           <div class="card" id="model-settings">
         <h3>模型参数（写进生成的配置）</h3>
             <div class="hint">
-              这些参数会写进插件自己的配置，并出现在「生成配置」产出的 JSON 里；导入到你自己的 provider 后，宿主模型选择器才看得到它们。保存时只提交已改动的字段。
+              这些参数会写进插件自己的配置，并出现在「生成配置」产出的 JSON 里；导入到你自己的 provider 后，宿主模型选择器才看得到它们。保存时只提交已改动的字段。列表里显示的是<b>目录 id</b>（<code>cline-pass/&lt;模型&gt;</code>）；写进生成配置时会加上 <code>cline-pass-local/</code> 前缀 —— 原因见上方「生成配置」卡片里的说明。
             </div>
             <div class="hint">
           「已改」= 这个字段被本面板覆盖过；「官方值」= models.dev 的值，只作对照，不会自动回写。档位控件来自 models.dev 的 reasoning_options：effort 是滑杆、toggle 是开关、none 表示该模型没有思考档位。

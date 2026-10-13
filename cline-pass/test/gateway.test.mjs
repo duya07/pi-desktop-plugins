@@ -282,17 +282,20 @@ test('manifest, catalog and entry point agree with each other', () => {
   const generated = modelRegistry.importConfigPayload()
   const entries = generated.providers[modelRegistry.IMPORT_PROVIDER_ID].models
   const carried = entries.map((model) => model.id)
-  for (const id of carried) assert.ok(shipped.includes(id), `the generated config carries ${id}, which the catalog does not ship`)
-  assert.deepEqual([...carried].sort(), [...catalog.DEFAULT_REGISTERED].sort())
-  assert.deepEqual([...carried].sort(), defaults.filter((model) => model.registered).map((model) => model.id).sort())
+  // The generated ids are re-spelled (`cline-pass-local/x`); the catalog behind them
+  // is what has to line up.
+  const carriedCatalog = carried.map((id) => modelRegistry.unimportModelId(id))
+  for (const id of carriedCatalog) assert.ok(shipped.includes(id), `the generated config carries ${id}, which the catalog does not ship`)
+  assert.deepEqual([...carriedCatalog].sort(), [...catalog.DEFAULT_REGISTERED].sort())
+  assert.deepEqual([...carriedCatalog].sort(), defaults.filter((model) => model.registered).map((model) => model.id).sort())
   // Three counts have to be the same number: what the generated config carries,
   // what the registry ticks by default, and what the catalog marks as default.
   assert.equal(carried.length, 5)
   assert.equal(carried.length, catalog.DEFAULT_REGISTERED.length)
   assert.equal(carried.length, defaults.filter((model) => model.registered).length)
   for (const entry of entries) {
-    const published = catalog.MODEL_CATALOG[entry.id]
-    const effective = defaults.find((candidate) => candidate.id === entry.id)
+    const published = catalog.MODEL_CATALOG[modelRegistry.unimportModelId(entry.id)]
+    const effective = defaults.find((candidate) => candidate.id === modelRegistry.unimportModelId(entry.id))
     // The generated entry carries the effective values under the *host's* field
     // names - and they are the published numbers, not a mis-merged copy of them.
     assert.equal(entry.name, effective.name, `${entry.id} name`)
@@ -489,6 +492,44 @@ test('gateway clamps the host thinking level onto the model the request names', 
   assert.equal(mock.state.requests.at(-1).body.model, 'cline-pass/minimax-m3')
   assert.equal('reasoning_effort' in mock.state.requests.at(-1).body, false)
   assert.equal('reasoningEffort' in mock.state.requests.at(-1).body, false)
+})
+
+test('the imported config spelling routes back to the catalog model', async () => {
+  // The generated config spells model ids `cline-pass-local/x`. Why: the host's
+  // delegation catalog keys a model as `<vendorKey>/<modelId>`, and every provider
+  // the user builds is `custom` - so an imported model carrying the same id as one
+  // already served by a provider pointed straight at Cline (`api.cline.bot`) would
+  // collide, and a subagent asking for that key can be served by the other provider
+  // instead (measured: the request never reached this gateway at all). A distinct
+  // spelling is the only thing the plugin can control - the provider's own name
+  // never appears in that key. The gateway must therefore accept its own imported
+  // spelling and route it back to the catalog id.
+  mock.state.requests.length = 0
+  const response = await chat({ stream: false, model: 'cline-pass-local/deepseek-v4.1-flash' })
+  assert.equal(response.status, 200)
+  assert.equal(mock.state.requests.at(-1).body.model, 'cline-pass/deepseek-v4.1-flash')
+  // The ledger keeps the canonical id, so one model stays one bucket no matter
+  // which spelling the caller used.
+  assert.equal(gateway.ops.history({ limit: 1 }).rows[0].model, 'cline-pass/deepseek-v4.1-flash')
+  // A pin configured on the catalog id still applies to the imported spelling.
+  gateway.ops.pin({ model: 'cline-pass/deepseek-v4.1-flash', upstreams: ['beta'], pinMode: 'strict' })
+  mock.state.requests.length = 0
+  await (await chat({ stream: false, model: 'cline-pass-local/deepseek-v4.1-flash' })).json()
+  assert.deepEqual(mock.state.requests.at(-1).body.provider.only, ['beta'])
+  gateway.ops.clearPin({ model: 'cline-pass/deepseek-v4.1-flash' })
+  // A config generated before the prefix existed keeps working...
+  mock.state.requests.length = 0
+  await (await chat({ stream: false, model: 'cline-pass/deepseek-v4.1-flash' })).json()
+  assert.equal(mock.state.requests.at(-1).body.model, 'cline-pass/deepseek-v4.1-flash')
+  // ...and so does the host's own short spelling.
+  mock.state.requests.length = 0
+  await (await chat({ stream: false, model: 'deepseek-v4.1-flash' })).json()
+  assert.equal(mock.state.requests.at(-1).body.model, 'cline-pass/deepseek-v4.1-flash')
+  // An unknown id is still passed through untouched rather than mapped onto some
+  // other model: a wrong model answering is worse than an upstream error.
+  mock.state.requests.length = 0
+  await (await chat({ stream: false, model: 'cline-pass-local/nope' })).json()
+  assert.equal(mock.state.requests.at(-1).body.model, 'cline-pass-local/nope')
 })
 
 test('gateway refuses a request without any usable account', async () => {
@@ -931,7 +972,7 @@ test('model settings: fourteen models, five registered, nothing edited', () => {
   // `registered` now means "ticked into the config the user imports", so the
   // generated payload is the thing to check - in catalog order.
   assert.deepEqual(
-    modelRegistry.importConfigPayload().providers[modelRegistry.IMPORT_PROVIDER_ID].models.map((model) => model.id),
+    generatedCatalogIds(modelRegistry.importConfigPayload()),
     catalog.DEFAULT_REGISTERED,
   )
   assert.deepEqual(defaults.find((model) => model.id === MODEL), {
@@ -1006,7 +1047,7 @@ test('model settings: an override wins and the published value stays visible', (
   // Deselecting one model leaves the other thirteen as they were.
   assert.equal(effective.filter((model) => model.registered).length, 4)
   assert.deepEqual(
-    modelRegistry.importConfigPayload(settings).providers[modelRegistry.IMPORT_PROVIDER_ID].models.map((model) => model.id),
+    generatedCatalogIds(modelRegistry.importConfigPayload(settings)),
     catalog.DEFAULT_REGISTERED.filter((id) => id !== 'cline-pass/glm-5.3'),
   )
   assert.deepEqual(modelRegistry.sanitizeSettings(settings)['cline-pass/glm-5.3'].contextWindow, 222222)
@@ -1094,7 +1135,7 @@ test('model settings: the alias and the host omit default survive the filter', (
   // host reads a model's label from now.
   const generatedEntry = modelRegistry
     .importConfigPayload({ [MODEL]: { name: '主模型', defaultThinkingLevel: 'omit' } })
-    .providers[modelRegistry.IMPORT_PROVIDER_ID].models.find((model) => model.id === MODEL)
+    .providers[modelRegistry.IMPORT_PROVIDER_ID].models.find((model) => model.id === modelRegistry.importModelId(MODEL))
   assert.equal(generatedEntry.name, '主模型')
   // `defaultThinkingLevel` has no counterpart in the host's `pi` format: an
   // imported model gets the host's generic thinking levels, so this field is
@@ -1107,6 +1148,18 @@ test('model settings: the alias and the host omit default survive the filter', (
 /** The model ids one generated payload carries, in order. */
 function generatedIds(payload) {
   return payload.providers[modelRegistry.IMPORT_PROVIDER_ID].models.map((model) => model.id)
+}
+
+/**
+ * The catalog ids behind a generated payload's ids.
+ *
+ * The generated config re-spells them (`cline-pass-local/x`) so an imported model
+ * never collides with one the user already gets from a provider pointed straight at
+ * Cline - see `models.js`. Everything the plugin keys by model id stays the catalog
+ * spelling, so that is what the assertions have to compare against.
+ */
+function generatedCatalogIds(payload) {
+  return generatedIds(payload).map((id) => modelRegistry.unimportModelId(id))
 }
 
 test("the generated config carries the ticked models with the host's own field names", () => {
@@ -1125,7 +1178,7 @@ test("the generated config carries the ticked models with the host's own field n
   assert.ok(provider.apiKey.length > 0)
   assert.equal(provider.headers, undefined, 'the gateway needs no extra header')
   assert.deepEqual(
-    provider.models.map((model) => model.id),
+    generatedCatalogIds(payload),
     catalog.DEFAULT_REGISTERED,
     'the five defaults are the ones ticked out of the box, in catalog order',
   )
@@ -1134,7 +1187,7 @@ test("the generated config carries the ticked models with the host's own field n
     // spelling it accepts for a model id (`modelId`/`model` are not read).
     assert.deepEqual(Object.keys(model), ['id', 'name', 'limit', 'reasoning', 'input'], `${model.id} fields`)
     assert.deepEqual(Object.keys(model.limit), ['context', 'output'], `${model.id} limit fields`)
-    const published = catalog.catalogEntry(model.id)
+    const published = catalog.catalogEntry(modelRegistry.unimportModelId(model.id))
     assert.ok(published, `${model.id} is not in the catalog`)
     assert.equal(model.name, published.name, `${model.id} name`)
     // The window and the output cap are the published (models.dev) numbers, and
@@ -1145,8 +1198,13 @@ test("the generated config carries the ticked models with the host's own field n
     assert.equal(model.reasoning, catalog.thinkingLevelsFor(published).length > 1, `${model.id} reasoning`)
     assert.deepEqual(model.input, published.supportsImages ? ['text', 'image'] : ['text'], `${model.id} input`)
   }
-  assert.deepEqual(provider.models.find((model) => model.id === MODEL), {
-    id: 'cline-pass/deepseek-v4.1-flash',
+  // The id is the *imported* spelling, and that is the point: an identical id would
+  // collide with a provider the user built straight from Cline's own endpoint, and
+  // the host's delegation key (`<vendorKey>/<modelId>`) would then be shared - the
+  // subagent can end up answered by that other provider (see `models.js`).
+  assert.equal(modelRegistry.importModelId(MODEL), 'cline-pass-local/deepseek-v4.1-flash')
+  assert.deepEqual(provider.models.find((model) => model.id === modelRegistry.importModelId(MODEL)), {
+    id: modelRegistry.importModelId(MODEL),
     name: 'DeepSeek V4.1 Flash',
     limit: { context: 1000000, output: 384000 },
     reasoning: true,
@@ -1163,13 +1221,13 @@ test('the generated config follows the ticks and the panel overrides, and writes
     'cline-pass/mimo-v2.6-pro': { registered: true, name: '我的模型' },
   })
   assert.deepEqual(
-    generatedIds(payload),
+    generatedCatalogIds(payload),
     ['cline-pass/deepseek-v4.1-flash', 'cline-pass/deepseek-v4-pro', 'cline-pass/glm-5.3', 'cline-pass/kimi-k3', 'cline-pass/mimo-v2.6-pro'],
     'the ticks decide what is in the config, in catalog order',
   )
   const models = payload.providers[modelRegistry.IMPORT_PROVIDER_ID].models
-  assert.deepEqual(models.find((model) => model.id === 'cline-pass/glm-5.3').limit, { context: 222222, output: 40000 })
-  assert.equal(models.find((model) => model.id === 'cline-pass/mimo-v2.6-pro').name, '我的模型')
+  assert.deepEqual(models.find((model) => model.id === modelRegistry.importModelId('cline-pass/glm-5.3')).limit, { context: 222222, output: 40000 })
+  assert.equal(models.find((model) => model.id === modelRegistry.importModelId('cline-pass/mimo-v2.6-pro')).name, '我的模型')
   assert.equal(modelRegistry.describeImportConfig(payload), '生成配置里现在有 5 个模型')
   // Unticking everything leaves a provider the host would throw away, so the
   // panel can say so instead of handing the user a config that does nothing.
@@ -1259,7 +1317,7 @@ test('setModel writes config.json only, and the shipped manifest is untouched', 
     assert.equal(configStore.get().modelSettings['cline-pass/glm-5.3'].contextWindow, 123456)
     // ...and the value the panel would hand the user is the saved one.
     const payload = modelRegistry.importConfigPayload(configStore.get().modelSettings)
-    const glm = payload.providers[modelRegistry.IMPORT_PROVIDER_ID].models.find((model) => model.id === 'cline-pass/glm-5.3')
+    const glm = payload.providers[modelRegistry.IMPORT_PROVIDER_ID].models.find((model) => model.id === modelRegistry.importModelId('cline-pass/glm-5.3'))
     assert.equal(glm.limit.context, 123456)
     assert.equal(fs.readFileSync(manifestPath, 'utf8'), before, 'the shipped manifest must survive a setModel')
     assert.equal(fs.existsSync(`${manifestPath}.bak`), false)

@@ -65,12 +65,43 @@ const LIMITS = {
  *
  * `api` is pinned to `chat_completions`: the gateway speaks the OpenAI dialect,
  * and the host's `pi` reader accepts `api | apiStyle | type` but only this value
- * means "OpenAI compatible". The model ids stay fully qualified
- * (`cline-pass/<slug>`), which is what the gateway routes on.
+ * means "OpenAI compatible". The model ids are re-spelled by {@link importModelId}
+ * so an imported model never collides with one the user already gets from a
+ * provider pointed straight at Cline.
  */
 const IMPORT_PROVIDER_ID = 'cline-pass-local'
 const IMPORT_PROVIDER_NAME = 'Cline Pass（本地网关）'
 const IMPORT_PROVIDER_API = 'chat_completions'
+
+/*
+ * The model ids in the generated config are *not* the catalog's own spelling.
+ *
+ * The host's delegation catalog keys a model as `<vendorKey>/<modelId>`, and every
+ * provider the user creates is `custom` - so an imported model whose id matches one
+ * already served by a provider pointed at `api.cline.bot` collides on that key, and
+ * a subagent asking for it can be answered by the *other* provider (measured: the
+ * request never reached this gateway at all). A provider's display name never appears
+ * in that key, so renaming the provider changes nothing; the id is the lever, and it
+ * is the one thing this plugin controls. The gateway maps the prefix back
+ * (`normalizeModelId`), and the plain spelling keeps working for configs generated
+ * before this.
+ */
+const IMPORT_MODEL_PREFIX = 'cline-pass-local/'
+
+/** The catalog id as the generated config spells it: `cline-pass/x` -> `cline-pass-local/x`. */
+function importModelId(id) {
+  return `${IMPORT_MODEL_PREFIX}${String(id ?? '').replace(/^cline-pass\//, '')}`
+}
+
+/**
+ * The catalog id behind a generated-config id, or `null` when the id carries no
+ * import prefix. Pure string work: the caller decides whether the result is a model.
+ */
+function unimportModelId(id) {
+  const text = String(id ?? '')
+  if (!text.startsWith(IMPORT_MODEL_PREFIX)) return null
+  return `cline-pass/${text.slice(IMPORT_MODEL_PREFIX.length)}`
+}
 
 /*
  * Where the generated config points: `GATEWAY_BASE_URL` from `protocol.js`, which
@@ -256,7 +287,7 @@ function importConfigPayload(settings = {}) {
         api: IMPORT_PROVIDER_API,
         apiKey: hostPlaceholderKey(),
         models: registeredModels(settings).map((model) => ({
-          id: model.id,
+          id: importModelId(model.id),
           name: model.name,
           limit: { context: model.contextWindow, output: model.maxTokens },
           // The host's own ladder for an imported model is its generic one; the
@@ -280,6 +311,9 @@ module.exports = {
   SETTINGS_FIELDS,
   LIMITS,
   IMPORT_PROVIDER_ID,
+  IMPORT_MODEL_PREFIX,
+  importModelId,
+  unimportModelId,
   modelIds,
   defaultsFor,
   sanitizeLevels,
