@@ -107,3 +107,49 @@ PI-Desktop 的 RACP Remote Host 模式下，agent 的工具调用（`Read/Write/
 ## 📄 许可
 
 MIT，见仓库根目录 [LICENSE](../LICENSE)。
+
+---
+
+## 写工具：`write_desktop_file`
+
+> [!CAUTION]
+> **高危**。它能把任意内容写到你桌面上的任意路径。**只在用户明确授权某个具体路径时使用** ——
+> 每次调用前先说明要改哪个文件、改什么、为什么、会影响什么，得到确认再动手。
+
+### 参数
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `path` | string | 桌面机上的绝对路径（必填） |
+| `contentBase64` | string | 文件内容，**base64 编码**（必填） |
+| `expectedSha256` | string? | **覆盖已存在文件时必填** —— 当前内容的 sha256（从 `read_desktop_file` 得到） |
+| `allowCreate` | boolean? | **文件不存在时必填**，显式确认要新建 |
+
+### 返回值
+
+```json
+{ "ok": true, "path": "C:\\...\\x.md", "action": "overwritten",
+  "before": { "size": 123, "sha256": "..." },
+  "after":  { "size": 456, "sha256": "..." } }
+```
+
+`before` / `after` 让调用方与用户都能复盘这次改动究竟动了什么。
+
+### 防误操作（工具内置，不依赖调用方自觉）
+
+- **覆盖已存在文件必须传 `expectedSha256`** —— 若文件在你读取之后被改动过，sha 不匹配，写入会被**拒绝**。
+  这是乐观并发控制：读→改→写，中间有人动过就失败，而不是静默覆盖别人的修改。
+- **新建文件必须传 `allowCreate: true`** —— 防止路径打错、意外创建垃圾文件。
+- 单次写入上限 **4 MiB**；目标是目录或非常规文件时直接拒绝。
+
+### 安全改一个文件的流程
+
+```
+1. read_desktop_file(path)                 → 内容 + 记下大小
+2. 在远端改好内容，算出新的 base64
+3. write_desktop_file(path, contentBase64, expectedSha256=<第 1 步文件内容的 sha256>)
+4. 核对返回的 before / after
+```
+
+注意：第 3 步的 `expectedSha256` 是**当前文件内容**的 sha256（把第 1 步的 base64 解码后计算），
+**不是**新内容的 sha256。

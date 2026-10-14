@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "io.github.duya07.desktop-file-reader",
   "name": "桌面文件读取",
-  "version": "0.1.0",
-  "description": "让远端工作区的会话直接读取桌面机上的文件（base64），不再依赖内置浏览器面板。",
+  "version": "0.2.0",
+  "description": "让远端工作区的会话直接读写桌面机上的文件（base64），不再依赖内置浏览器面板。",
   "author": "duya07",
   "license": "MIT",
   "homepage": "https://github.com/duya07/pi-desktop-plugins",
@@ -17,11 +17,22 @@
         "schema": {
           "type": "object",
           "properties": {
-            "path": { "type": "string", "description": "Absolute path on the desktop, e.g. C:/Users/me/notes.txt" },
-            "offset": { "type": "integer", "description": "Byte offset to start at (default 0)" },
-            "length": { "type": "integer", "description": "Max bytes to read (default 262144, max 1048576)" }
+            "path": {
+              "type": "string",
+              "description": "Absolute path on the desktop, e.g. C:/Users/me/notes.txt"
+            },
+            "offset": {
+              "type": "integer",
+              "description": "Byte offset to start at (default 0)"
+            },
+            "length": {
+              "type": "integer",
+              "description": "Max bytes to read (default 262144, max 1048576)"
+            }
           },
-          "required": ["path"]
+          "required": [
+            "path"
+          ]
         }
       },
       {
@@ -31,14 +42,55 @@
         "schema": {
           "type": "object",
           "properties": {
-            "path": { "type": "string", "description": "Absolute directory path on the desktop" }
+            "path": {
+              "type": "string",
+              "description": "Absolute directory path on the desktop"
+            }
           },
-          "required": ["path"]
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "write_desktop_file",
+        "description": "Write bytes (base64) to a file on the local (desktop) filesystem. Overwriting an existing file REQUIRES expectedSha256 taken from read_desktop_file; creating a new file REQUIRES allowCreate:true. Returns before/after size and sha256 so the caller can audit the change. Only use with explicit user authorization for the specific path.",
+        "risk": "high",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Absolute path on the desktop"
+            },
+            "contentBase64": {
+              "type": "string",
+              "description": "File content, base64-encoded"
+            },
+            "expectedSha256": {
+              "type": "string",
+              "description": "Required when overwriting: sha256 of the current file content (from read_desktop_file)"
+            },
+            "allowCreate": {
+              "type": "boolean",
+              "description": "Required when the file does not exist yet"
+            }
+          },
+          "required": [
+            "path",
+            "contentBase64"
+          ]
         }
       }
     ]
   },
-  "permissions": ["agent.tool.register"],
-  "engines": { "piDesktop": ">=0.20.0" },
-  "activationEvents": ["onStartup"]
+  "permissions": [
+    "agent.tool.register"
+  ],
+  "engines": {
+    "piDesktop": ">=0.20.0"
+  },
+  "activationEvents": [
+    "onStartup"
+  ]
 }
