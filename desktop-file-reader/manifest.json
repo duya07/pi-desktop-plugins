@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.duya07.desktop-file-reader",
   "name": "桌面文件读写",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "让远端工作区的会话直接读写删桌面机上的文件；push/pull 直传让大文件字节不经 LLM 上下文。0.5.0 起默认走 SSH（sftp，零用户操作，复用桌面既有 ssh 配置），HTTP 通道保留为 mode:'http'。",
   "author": "duya07",
   "license": "MIT",
@@ -117,7 +117,7 @@
       },
       {
         "name": "push_desktop_file_to_remote",
-        "description": "Push a desktop file to the remote host, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): pass host (ssh-config alias or user@host) + remotePath and the file is uploaded with sftp (BatchMode, no interaction; put overwrites an existing remote file). The local source path must not contain the glob metacharacters * ? [ (rejected conservatively: modern OpenSSH escapes them inside quoted args, older or non-OpenSSH clients glob-expand them and could silently transfer a different file). Backslashes are fine — Windows paths like C:\\Users\\me\\f.txt work. The remote destination is not glob-expanded. expectedRemoteSha256 is rejected on the ssh channel (the remote file is never read back). The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized destination; auth via Authorization: Bearer <token> header). Requires explicit user authorization for the specific path and destination. Returns sha256/size for verification.",
+        "description": "Push a desktop file to the remote host, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): call list_ssh_hosts first to see which aliases exist and let the user pick one, then pass host (ssh-config alias or user@host) + remotePath and the file is uploaded with sftp (BatchMode, no interaction; put overwrites an existing remote file). The local source path must not contain the glob metacharacters * ? [ (rejected conservatively: modern OpenSSH escapes them inside quoted args, older or non-OpenSSH clients glob-expand them and could silently transfer a different file). Backslashes are fine — Windows paths like C:\\Users\\me\\f.txt work. The remote destination is not glob-expanded. expectedRemoteSha256 is rejected on the ssh channel (the remote file is never read back). The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized destination; auth via Authorization: Bearer <token> header). Requires explicit user authorization for the specific path and destination. Returns sha256/size for verification.",
         "risk": "high",
         "schema": {
           "type": "object",
@@ -132,7 +132,7 @@
             },
             "host": {
               "type": "string",
-              "description": "SSH: ssh-config alias (recommended — reuses the desktop's existing ssh config and key, nothing to set up) or user@host. No spaces; must not start with '-'."
+              "description": "SSH: ssh-config alias on the desktop (recommended — reuses its existing ssh config and key, nothing to set up) or user@host. Call list_ssh_hosts first and let the user pick when it is not obvious. No spaces; must not start with '-'."
             },
             "port": {
               "type": "integer",
@@ -170,7 +170,7 @@
       },
       {
         "name": "pull_remote_file_to_desktop",
-        "description": "Pull a remote file and save it to a desktop path, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): pass host (ssh-config alias or user@host) + remotePath and the file is downloaded with sftp (BatchMode, no interaction) to a temp file, sha256-verified, then atomically renamed. The remote source path must not contain the glob metacharacters * ? [ (rejected conservatively: modern OpenSSH escapes them inside quoted args, older or non-OpenSSH clients glob-expand them and could silently fetch a different file). The local destination is not glob-expanded. The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized source; auth via Authorization header). Overwrite requires expectedSha256 of the current target; create requires allowCreate:true. expectedRemoteSha256 is honoured on the ssh channel (compared with the sha of the received file). Requires explicit user authorization for the specific path and source.",
+        "description": "Pull a remote file and save it to a desktop path, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): call list_ssh_hosts first to see which aliases exist and let the user pick one, then pass host (ssh-config alias or user@host) + remotePath and the file is downloaded with sftp (BatchMode, no interaction) to a temp file, sha256-verified, then atomically renamed. The remote source path must not contain the glob metacharacters * ? [ (rejected conservatively: modern OpenSSH escapes them inside quoted args, older or non-OpenSSH clients glob-expand them and could silently fetch a different file). The local destination is not glob-expanded. The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized source; auth via Authorization header). Overwrite requires expectedSha256 of the current target; create requires allowCreate:true. expectedRemoteSha256 is honoured on the ssh channel (compared with the sha of the received file). Requires explicit user authorization for the specific path and source.",
         "risk": "high",
         "schema": {
           "type": "object",
@@ -185,7 +185,7 @@
             },
             "host": {
               "type": "string",
-              "description": "SSH: ssh-config alias (recommended — reuses the desktop's existing ssh config and key, nothing to set up) or user@host. No spaces; must not start with '-'."
+              "description": "SSH: ssh-config alias on the desktop (recommended — reuses its existing ssh config and key, nothing to set up) or user@host. Call list_ssh_hosts first and let the user pick when it is not obvious. No spaces; must not start with '-'."
             },
             "port": {
               "type": "integer",
@@ -223,6 +223,15 @@
           "required": [
             "path"
           ]
+        }
+      },
+      {
+        "name": "list_ssh_hosts",
+        "description": "List the concrete Host aliases defined in the DESKTOP machine's ~/.ssh/config, with the hostname / port / user each alias resolves to (never key paths). Read-only, no network. Call this FIRST when you need to move a file to or from a remote host: show the candidates to the user, let them choose, then pass the chosen alias as the host argument of push_desktop_file_to_remote / pull_remote_file_to_desktop. The plugin never picks a host by itself.",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {}
         }
       }
     ]

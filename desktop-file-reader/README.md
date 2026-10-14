@@ -91,6 +91,16 @@ SSH 通道另有一条拒绝：`expectedRemoteSha256` 在 push 上无法兑现�
 
 行为：校验目标（存在则需 `expectedSha256`，不存在则需 `allowCreate:true`，拒绝目录/符号链接）→ **SSH**：`sftp` 批处理 `get` 到同目录 `.<name>.tmp-<rand>`，算 sha → TOCTOU 复核 → 原子 `rename`，返回 `{ ok, transport:"ssh", bytesReceived, sha256, action }`；**HTTP**：`GET remoteUrl`（拒绝重定向，要求 2xx，`Content-Length` ≤50 MiB）后走同样的落盘收尾。失败时临时文件清理、stderr 回传。
 
+### `list_ssh_hosts()`
+
+列出桌面机 `~/.ssh/config` 里**具体**的 `Host` 别名，以及每个别名按 ssh 取值语义（每个选项取"第一个匹配块"的值）解析出的 `hostname` / `port` / `user`。只读、不联网、无参数；**不返回 `IdentityFile` 等密钥路径**。
+
+返回 `{ ok, configPath, configExists, status, count, hosts[], note }`，其中 `hosts[]` 每项只有 `{ alias, hostname, port, user }`，`status` 三态见「使用前准备」一节。
+
+设计意图：**插件从不自己挑主机**。别名由调用方给出、由桌面机的 ssh 客户端解析（含其 `IdentityFile`）——避免"猜错别名，把文件传到另一台机器"（`put` 是覆盖语义，猜错的代价不小）。所以标准流程是：`list_ssh_hosts` → 让用户选定 → 再调 push/pull。
+
+> 返回的 `hostname` 是桌面机的真实连接地址（本机基础设施信息），它会随工具结果进入模型上下文。功能上必要——调用方得知道自己要连哪台机；若你的工作流对"地址进上下文"敏感，请自行权衡（`hosts[]` 里**不含** `IdentityFile` 等密钥路径，这一条是硬保证）。
+
 ---
 
 ## 工作原理
@@ -121,6 +131,8 @@ SSH 通道另有一条拒绝：`expectedRemoteSha256` 在 push 上无法兑现�
 完成（远端 sha256sum 复核）— LLM 只传了 path 与 host/remotePath，无字节经过上下文
 ```
 
+> 注：上图里的 `-o StrictHostKeyChecking=accept-new` 只在用户 `~/.ssh/config` **未对该 host 表态**时才传；用户写过 `yes`/`no` 时不传，由 ssh 按 config 决定。详见「安全说明」。
+
 ---
 
 ## 安全说明
@@ -131,7 +143,7 @@ SSH 通道另有一条拒绝：`expectedRemoteSha256` 在 push 上无法兑现�
 - 只声明 **`agent.tool.register`** 一个权限（属**高危**权限，宿主在安装/加载时会弹出确认，请显式批准）。
 - **刻意不声明 `fs.read`**：声明了反而会被远端会话的工具中继排除，那样插件就失效了——桌面分发的前提是工具走插件通道而非宿主文件 API。
 - 旧工具：不监听端口、不发起网络请求、不写外部服务；纯本地文件操作。
-- 直传（SSH，0.5.0 默认）：`push`/`pull` 会在**桌面侧**启动一次 `sftp` 连到 `host`（ssh-config 别名），复用桌面既有 SSH 密钥；**仅**当 agent 显式调用时才发起，**必须只对用户明确授权的目标使用**。安全设计：不拼 shell 字符串（`spawn` argv 数组 + sftp 批处理协议，不经远端 shell 解析）；`host` 白名单字符集、禁止 `-` 开头（堵 ssh 选项注入）；`BatchMode=yes`（禁止交互，认证失败立刻报错，绝不卡住）；`StrictHostKeyChecking=accept-new`（首次记录指纹、指纹变化仍拒绝，绝不设 `no`）；`ConnectTimeout` 与整体超时（超时杀进程，不留僵尸）；失败时 sftp stderr 截断（4 KiB）回传。
+- 直传（SSH，0.5.0 默认）：`push`/`pull` 会在**桌面侧**启动一次 `sftp` 连到 `host`（ssh-config 别名），复用桌面既有 SSH 密钥；**仅**当 agent 显式调用时才发起，**必须只对用户明确授权的目标使用**。安全设计：不拼 shell 字符串（`spawn` argv 数组 + sftp 批处理协议，不经远端 shell 解析）；`host` 白名单字符集、禁止 `-` 开头（堵 ssh 选项注入）；`BatchMode=yes`（禁止交互，认证失败立刻报错，绝不卡住）；`StrictHostKeyChecking` **只在用户 `~/.ssh/config` 未对目标 host 表态时才补 `accept-new`**（首次记录指纹、指纹变化仍拒绝，绝不设 `no`；用户自己写了 `yes`/`no` 就不传 `-o`，由 ssh 按 config 决定。判定与 ssh 的 Host 匹配保持一致——**大小写敏感**）；`ConnectTimeout` 与整体超时（超时杀进程，不留僵尸）；失败时 sftp stderr 截断（4 KiB）回传，并附上 argv / batch 内容便于定位。
 - 直传（HTTP，0.4.0 通道，`mode:"http"`）：`push`/`pull` 会主动发起 `http(s)` 请求到 **`remoteUrl`（无白名单，仅校验 `http(s)` 协议与长度）**，**必须只对用户明确授权的目标使用**。`token` 推荐放 `Authorization: Bearer` 头（路径 token 兼容但会进访问日志，已在 receiver 侧遮蔽，仍不推荐），`token` 不回显到错误信息。
 - **不要用它把 `.env`、token、Cookie、私钥等凭据读出来交给远端**。工具不会替你拦，边界在你手上。
 - **写与删都要求调用方先拿到文件的 sha256 / size**（即先「看过」再改），并且返回值都带 before/after 供复盘。删除另有不可绕过的保护清单，见下。
@@ -140,6 +152,26 @@ SSH 通道另有一条拒绝：`expectedRemoteSha256` 在 push 上无法兑现�
 
 ---
 
+## 使用前准备
+
+只用 `read_desktop_file` / `list_desktop_dir` / `write_desktop_file` / `delete_desktop_file` 的话，**什么都不用准备**。
+
+要用 `push_desktop_file_to_remote` / `pull_remote_file_to_desktop` 的 SSH 通道，桌面机需要满足**任意一条**：
+
+1. 桌面机 `~/.ssh/config` 里有一个能连到目标主机的 `Host` 别名（推荐条目自带 `HostName` / `User` / `IdentityFile`）；或
+2. 直接给 `user@host`，且桌面机的 ssh 能用默认密钥或 ssh-agent 完成认证。
+
+**不准备会怎样**：不会只丢一句看不懂的错。agent 调 `list_ssh_hosts` 会拿到 `status` 与一句 `note`，据此告诉你"缺什么、下一步做什么"：
+
+| `status` | 含义 | 会转达给你的话（大意） |
+| --- | --- | --- |
+| `ok` | 有可用别名 | 列出候选，请你选一个 |
+| `no-concrete-aliases` | 配置文件在，但只有 `Host *` 这类通配条目 | 没有可指名的别名；请提供别名或 `user@host`，或自行加一条具体条目 |
+| `no-config-file` | 桌面机没有 `~/.ssh/config` | 同上，并给出它找的具体路径 |
+
+**插件自身不会创建或修改 `~/.ssh/config`**——没有这种逻辑，也不会替用户挑主机。想省事的话，可以让 agent 用 `write_desktop_file` 帮你补一条，但请当成"改一个能锁死你 SSH 访问的文件"来对待：先读原文、只追加、留备份、用 `expectedSha256` 绑定版本，并明确授权具体路径。
+
+---
 ## 安装
 
 **方式一 · 开发加载**：PI-Desktop → 插件页 → **Load development plugin** → 选择本目录 → 在权限确认里授予 `agent.tool.register`。
@@ -165,6 +197,7 @@ SSH 通道另有一条拒绝：`expectedRemoteSha256` 在 push 上无法兑现�
 
  **0.5.0 大文件直传（推荐：SSH，零用户操作，字节不经 LLM）**：
 
+ 0. 先调 `list_ssh_hosts()` 看桌面机有哪些别名可用（会给出每个别名的 `hostname`/`port`/`user`），**让用户选定**；别名不确定时不要猜。
  1. 桌面 → 远端：`push_desktop_file_to_remote({ path: "C:/Users/me/big.bin", host: "<remote-host>", remotePath: "/srv/transfer/big.bin" })`（`<remote-host>` 是桌面 `~/.ssh/config` 里**已有**的条目别名；无 mode 即默认 SSH）。核对返回 `sha256` 与远端 `sha256sum /srv/transfer/big.bin`。
  2. 远端 → 桌面：`pull_remote_file_to_desktop({ path: "C:/Users/me/big.bin", host: "<remote-host>", remotePath: "/srv/transfer/big.bin", allowCreate: true })`，核对返回 `sha256`。
  3. 全程不要求用户开隧道、改 nginx、起任何远端服务；认证走桌面既有 SSH 密钥，`BatchMode` 保证绝不交互卡住。
@@ -204,6 +237,9 @@ HTTP 通道（`mode:"http"`）仍然保留，但它**要求远端已经存在一
 - **0.3.0**：新增 `delete_desktop_file`；`node --check` 通过，隔离运行时测试 **43 项全部通过**（4 道门禁的全部拒绝路径、16 项保护清单用例、符号链接不跟随、目录不递归、`dryRun` 不落删、`confirm` 严格布尔、`expectedSize` 大文件路径）；官方 `pi-plugin check` = `OK io.github.duya07.desktop-file-reader@0.3.0`（3 个文件）；`pack` 产物挂在 Release `desktop-file-reader-v0.3.0`。测试脚本：[`tests/desktop-file-reader/delete-0.3.0.test.js`](../../tests/desktop-file-reader/delete-0.3.0.test.js)（在插件目录外，不参与打包）。
 - **0.4.0**：新增 `push_desktop_file_to_remote` / `pull_remote_file_to_desktop`（HTTP 直传，字节不经 LLM）；`node --check` 通过；旧 43 项继续全过；新增直传测试覆盖全部拒绝路径与端到端；官方 `pi-plugin check` = `OK io.github.duya07.desktop-file-reader@0.4.0`。详见 `../upstream/VERIFICATION.md` 与 `../upstream/DESIGN-0.4.0.md`。
 - **0.5.0**：push/pull 新增 `mode` 参数，**默认走 SSH（sftp）**——零用户操作、零远端服务、零远端配置改动，HTTP 通道保留为 `mode:"http"`；`node --check` 通过；旧 43 项 + 旧 51 项继续全过；新增 SSH 测试 **45 项**（参数拼装、注入拒绝、超时杀进程、非零退出码与 stderr 回传、子进程清理，复核轮补的源路径 glob 拒绝、`expectedRemoteSha256`、批处理写失败、stderr 尾巴，以及 Windows 语义回归与“真实 sftp”实测）；官方 `pi-plugin check` = `OK io.github.duya07.desktop-file-reader@0.5.0`。详见 `../upstream/VERIFICATION.md` 与 `../upstream/DESIGN-0.5.0.md`。
+- **0.5.1**：修掉 SSH 通道在 Windows 上**必然失败**的缺陷——插件进程由宿主以最小 env 启动，不含 `%ProgramData%`，而 Windows 版 `sftp`/`ssh` 启动时要读 `<ProgramData>\ssh\ssh_config`；缺失时 `sftp` 立即退出 **255 且 stdout/stderr 全空**，调用侧完全看不出原因（不是认证失败、远端 sshd 也没有连接记录）。修法：`spawn("sftp", …)` 显式补 `ProgramData`（缺省时由 `SystemRoot` 推导）。
+  同版本另外三处：`delete_desktop_file` 的 `dryRun` 现在返回 `wouldDelete.sha256`（"预览 → 真删"不必再退到弱一档的 `expectedSize`）；`-o StrictHostKeyChecking=accept-new` 只在用户 `~/.ssh/config` **未表态**时才补（此前命令行会覆盖用户写的 `yes`，属安全降级）；新增只读工具 `list_ssh_hosts`。
+  验证：`node --check` 通过；真机对照实验（最小 env 无修复 = 255 且零输出；补 `ProgramData` = exit 0，远端 sha256 与源文件逐字节一致）；ssh 取值语义探针（用户 config 显式设置 → `true`，未设置 → `false`）；`list_ssh_hosts` 三态逐分支实测；`dryRun` 返回的 sha256 与独立计算结果一致；`onLoad` 注册的 7 个工具名与 manifest 逐一对齐。
 
 ---
 

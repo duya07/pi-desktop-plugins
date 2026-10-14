@@ -19,7 +19,7 @@
 | [`pi.transcript-doctor`](./pi.transcript-doctor/README.md) · **已废弃** | 0.1.0 | **PI-Desktop v0.19.1 已修复该问题，因此本插件已废弃（2026-10-13）：不再需要、不再维护，不要重新加载或安装。** 原功能：检查 `.jsonl.layout` 行偏移缓存是否与 `.jsonl` 对得上；若不一致，就备份并清理，避免 host-core 报 `stream did not contain valid UTF-8` 并卡死持久化队列。纯本地字节比对，零模型调用。 | `ui.panel` · `background.service` · `notify` · `agent.tool.register` | 本地字节比对 · 自动备份清理 · 零模型调用 |
 | [`cline-pass`](./cline-pass/README.md) | 1.0.0 | Cline Pass 订阅接入。插件自带本地 OpenAI 兼容网关（`127.0.0.1:41593`）：账号池与轮转、上游通道枚举与校验、pin/exclude、failover、流式空闲超时、思考档位映射。面板分为五页：账号池、模型与通道、请求历史、用量、设置。此外还包含 Cline 官方额度窗口（5 小时 / 本周 / 本月）、「生成配置 / 写入文件」导出，以及 10 个 `cline_pass_*` agent 工具。 | `ui.panel` · `background.service` · `notify` · `agent.tool.register` · `models.list` · `fs.read`/`fs.write` | 本地网关 `127.0.0.1:41593` · 账号池轮转/冷却 · 10 个 agent 工具 · 生成配置供导入（默认 5 模型） |
 | [`pi-think-zh`](./pi-think-zh/README.md) | 0.2.0 | 中文可见推理指引。每轮在 `before_agent_start` 追加明确的语言要求，约束宿主「思考」区中模型已公开返回的 `thinking` / `reasoning` 文字，而不只是最终回答。 | `agent.extension` | `before_agent_start` 注入 · 约束 `thinking`/`reasoning` 语言 |
-| [`desktop-file-reader`](./desktop-file-reader/README.md) | 0.5.0 | 让**远端工作区**的会话直接读写删桌面机上的文件，并支持**大文件直传**（默认 SSH/sftp，零用户准备、零远端服务；字节不经 LLM 上下文）。工具在**桌面侧执行**：分发链按工具名前缀分流，先于远端分支命中。 | `agent.tool.register` | 桌面分发工具 · 读/写/删 · push/pull 直传 · sha256 门禁 + 保护清单 · 免浏览器面板 |
+| [`desktop-file-reader`](./desktop-file-reader/README.md) | 0.5.1 | 让**远端工作区**的会话直接读写删桌面机上的文件，并支持**大文件直传**（默认 SSH/sftp，零用户准备、零远端服务；字节不经 LLM 上下文）。工具在**桌面侧执行**：分发链按工具名前缀分流，先于远端分支命中。 | `agent.tool.register` | 桌面分发工具 · 读/写/删 · push/pull 直传 · `list_ssh_hosts` 列别名（先让用户选，再拼参数） · sha256 门禁 + 保护清单 · 免浏览器面板 |
 
 > [!TIP]
 > `cline-pass` **不声明任何 provider**，模型选择器里不会出现插件那一行。用法如下：

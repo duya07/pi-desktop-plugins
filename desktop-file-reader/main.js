@@ -330,6 +330,197 @@ function quoteBatchArg(s) {
 }
 
 /**
+ * 传给 sftp 子进程的环境：继承当前 env，并保证 Windows OpenSSH 需要的 %ProgramData% 存在。
+ *
+ * 为什么必须补：Windows 版 sftp/ssh 启动时会读全局配置 <ProgramData>\ssh\ssh_config。
+ * 宿主给插件进程的是最小 env（PATH/SystemRoot/windir/TEMP/TMP/TMPDIR/LANG/HOME/USER/USERPROFILE），
+ * 不含 ProgramData；缺失时 sftp 立即退出 255，且 stdout/stderr **全空**，调用侧完全看不出原因。
+ *
+ * 本机实测（PI-Desktop 0.20.1 + Windows OpenSSH，对同一远端做 put）：
+ *   最小 env                      -> exit 255，零输出
+ *   最小 env + ProgramData        -> exit 0，文件到达远端且 sha256 与源文件一致
+ *   最小 env + 其余 13 个候选变量  -> 仍然 255（USER/USERNAME/HOME/HOMEDRIVE/HOMEPATH/LANG/APPDATA/
+ *                                    LOCALAPPDATA/SystemDrive/ComSpec/PATHEXT/ALLUSERSPROFILE/ProgramFiles）
+ */
+function sftpChildEnv() {
+  const env = Object.assign({}, process.env);
+  // 只在 Windows 上补：Windows 版 sftp/ssh 启动时要读 <ProgramData>\ssh\ssh_config，
+  // 而宿主给插件进程的最小 env 不含 ProgramData。类 Unix 上不注入这个 Windows 路径。
+  if (process.platform === "win32" && !env.ProgramData) {
+    const root = env.SystemRoot || env.windir || "C:\\Windows";
+    env.ProgramData = path.join(root, "..", "ProgramData");
+  }
+  return env;
+}
+
+/** ssh config 的默认路径（Windows 用 USERPROFILE，类 Unix 用 HOME）。 */
+function sshConfigPath() {
+  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  return home ? path.join(home, ".ssh", "config") : null;
+}
+
+/**
+ * ssh config 的 Host 模式匹配：只处理 * 与 ?。
+ *
+ * **大小写敏感**——OpenSSH 的 Host 匹配走 fnmatch，不做大小写折叠。
+ * 实测：config 里写 `Host MyHost` 时，`ssh -G myhost` 解析不到该条目
+ * （hostname 不展开、stricthostkeychecking 回落到默认 ask）。
+ * 若这里用 "i" 标志，就会把"用户没表态"误判成"已表态"，进而不补 accept-new，
+ * 让 BatchMode 下的首次连接失败，而且错误看起来像认证问题。
+ */
+function sshHostPatternMatches(pattern, host) {
+  if (!pattern) return false;
+  if (pattern === "*") return true;
+  const rx = new RegExp(
+    "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$"
+  );
+  return rx.test(host);
+}
+
+/**
+ * 目标 host 是否在用户的 ssh 配置里显式设置了 StrictHostKeyChecking。
+ *
+ * 返回 true  = 用户已表态 → 不要传命令行 -o（命令行优先级高于 config，会把它悄悄降级）；
+ * 返回 false = 未表态 → 可以补 accept-new，保持“首次连接零操作”。
+ * 任何读取/解析失败都按 false 处理：读不到 config 不该让传输失败。
+ * 支持 Include（相对路径按 ssh 语义解析到 ~/.ssh 下），限制递归规模防环。
+ */
+/** ssh config 里本插件关心的选项（其余一律忽略）。 */
+const SSH_INTERESTING_KEYS = new Set(["hostname", "port", "user", "stricthostkeychecking"]);
+
+/**
+ * 顺序读取 ssh config（含 Include，相对路径按 ssh 语义解析到 ~/.ssh 下），
+ * 把每个 Host 块摊平成 { patterns, opts }；Host 块之外的全局选项视为 patterns:["*"]。
+ * 读取失败就跳过该文件（读不到 config 不该让调用方失败），递归规模限制防环。
+ */
+async function readSshConfigBlocks() {
+  const root = sshConfigPath();
+  const sshDir = root ? path.dirname(root) : null;
+  const queue = root ? [root] : [];
+  const seen = new Set();
+  const blocks = [];
+  while (queue.length > 0 && seen.size < 32) {
+    const file = queue.shift();
+    if (!file || seen.has(file)) continue;
+    seen.add(file);
+    let text;
+    try {
+      text = await fsp.readFile(file, "utf8");
+    } catch {
+      continue;
+    }
+    let current = null; // 当前 Host 块的记录；null 表示还没进过 Host 块
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const m = line.match(/^([A-Za-z][A-Za-z0-9]*)[\s=]+(.*)$/);
+      if (!m) continue;
+      const key = m[1].toLowerCase();
+      const value = m[2].trim();
+      if (key === "include") {
+        for (const p of value.split(/\s+/)) {
+          if (!p) continue;
+          if (p.startsWith("~")) queue.push(path.join(os.homedir(), p.slice(1).replace(/^[\\/]/, "")));
+          else if (path.isAbsolute(p)) queue.push(p);
+          else if (sshDir) queue.push(path.join(sshDir, p));
+        }
+        continue;
+      }
+      if (key === "host") {
+        current = { patterns: value.split(/\s+/).filter(Boolean), opts: {} };
+        blocks.push(current);
+        continue;
+      }
+      if (!current) {
+        current = { patterns: ["*"], opts: {} }; // Host 之前的全局选项对所有主机生效
+        blocks.push(current);
+      }
+      if (SSH_INTERESTING_KEYS.has(key)) current.opts[key] = value;
+    }
+  }
+  return blocks;
+}
+
+/** ssh 的取值语义：每个选项各自取“第一个匹配到的块”的值。 */
+function resolveSshHostEntry(alias, blocks) {
+  const out = { alias, hostname: null, port: null, user: null };
+  for (const b of blocks) {
+    if (!b.patterns.some((p) => sshHostPatternMatches(p, alias))) continue;
+    if (out.hostname === null && b.opts.hostname !== undefined) out.hostname = b.opts.hostname;
+    if (out.port === null && b.opts.port !== undefined) out.port = b.opts.port;
+    if (out.user === null && b.opts.user !== undefined) out.user = b.opts.user;
+  }
+  if (out.port !== null) {
+    const n = Number(out.port);
+    out.port = Number.isInteger(n) && n > 0 && n < 65536 ? n : null;
+  }
+  return out;
+}
+
+/**
+ * 目标 host 是否在 ssh 配置里显式设置了 StrictHostKeyChecking。
+ * 返回 true  = 用户已表态 → 不要传命令行 -o（命令行优先级高于 config，会把它悄悄降级）；
+ * 返回 false = 未表态 → 可以补 accept-new，保持“首次连接零操作”。
+ */
+async function sshConfigSetsHostKeyChecking(host) {
+  for (const b of await readSshConfigBlocks()) {
+    if (b.opts.stricthostkeychecking !== undefined && b.patterns.some((p) => sshHostPatternMatches(p, host))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 列出 ssh config 里可用的**具体**主机别名（跳过 * ? ! 模式），
+ * 以及每个别名按 ssh 取值语义解析出的 hostname / port / user。
+ *
+ * 这是给 agent 的“发现目标”工具：agent 先调它拿到候选，把候选交给用户选定，
+ * 再用选中的别名调 push/pull —— 插件自己绝不替调用方挑主机。
+ * 只读；不返回 IdentityFile 等密钥路径。
+ */
+async function listSshHosts() {
+  const configPath = sshConfigPath();
+  const blocks = await readSshConfigBlocks();
+  const aliases = [];
+  for (const b of blocks) {
+    for (const p of b.patterns) {
+      if (!p || p === "*" || p.includes("*") || p.includes("?") || p.includes("!")) continue;
+      if (!aliases.includes(p)) aliases.push(p);
+    }
+  }
+  const hosts = aliases.map((a) => resolveSshHostEntry(a, blocks));
+
+  // 区分“配置文件不存在”“存在但只有通配条目”“正常”，
+  // 让 agent 能把“到底缺什么、下一步该让用户做什么”原样讲给用户，而不是笼统报空。
+  let configExists = false;
+  if (configPath) {
+    try {
+      configExists = (await fsp.stat(configPath)).isFile();
+    } catch {
+      configExists = false;
+    }
+  }
+  const status = hosts.length > 0 ? "ok" : configExists ? "no-concrete-aliases" : "no-config-file";
+  const note =
+    status === "ok"
+      ? "Show these to the user and let them choose, then pass the chosen alias as the `host` argument of push/pull. The alias is resolved by the desktop's own ssh client, including its IdentityFile; the plugin never picks a host on its own."
+      : status === "no-concrete-aliases"
+        ? "The ssh config exists but contains only wildcard Host patterns, so there is no alias to name. Tell the user this and ask for the alias (or a user@host) they want to use. If they want an alias, they add a concrete entry on the DESKTOP machine, e.g. `Host myhost` + `HostName <address>` + `User <user>` + `IdentityFile <key>`. Nothing is created automatically — report what is missing instead of guessing a host."
+        : "No ssh config file at " +
+          (configPath || "(HOME/USERPROFILE could not be resolved)") +
+          ". Tell the user this and ask for the ssh alias or a user@host. The ssh channel needs either an alias in that file or user@host plus a usable key/ssh-agent on the desktop; without it, push/pull over SSH cannot work. Nothing is created automatically.";
+  return {
+    ok: true,
+    configPath,
+    configExists,
+    status,
+    count: hosts.length,
+    hosts,
+    note,
+  };
+}
+/**
  * 跑一次 sftp 批处理传输（put 或 get）。
  * 安全设计：
  *   - spawn 不用 shell，argv 数组传递，所有 `-o` 值都是本文件内的常量；
@@ -356,16 +547,12 @@ async function runSftpTransfer({ batchLine, host, port, timeoutMs }) {
     return { ok: false, batchFileError: e.code || e.message || String(e) };
   }
 
-  const args = [
-    "-b",
-    batchFile,
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "StrictHostKeyChecking=" + SSH_STRICT_HOST_KEY_CHECKING,
-    "-o",
-    "ConnectTimeout=" + SSH_CONNECT_TIMEOUT_S,
-  ];
+  // 命令行 -o 的优先级高于 ~/.ssh/config：只有用户没表态时才补 accept-new，
+  // 否则会把用户 config 里的 StrictHostKeyChecking 悄悄降级。
+  const userSetHostKey = await sshConfigSetsHostKeyChecking(host);
+  const args = ["-b", batchFile, "-o", "BatchMode=yes"];
+  if (!userSetHostKey) args.push("-o", "StrictHostKeyChecking=" + SSH_STRICT_HOST_KEY_CHECKING);
+  args.push("-o", "ConnectTimeout=" + SSH_CONNECT_TIMEOUT_S);
   if (port) args.push("-P", String(port));
   args.push(host);
 
@@ -388,7 +575,7 @@ async function runSftpTransfer({ batchLine, host, port, timeoutMs }) {
         return next.length > SFTP_IO_CAP ? next.slice(0, SFTP_IO_CAP) : next;
       };
 
-      const child = spawn("sftp", args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      const child = spawn("sftp", args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: sftpChildEnv() });
 
       const settle = (payload) => {
         if (settled) return;
@@ -397,7 +584,7 @@ async function runSftpTransfer({ batchLine, host, port, timeoutMs }) {
         clearTimeout(graceTimer);
         clearTimeout(hardTimer);
         clearTimeout(drainTimer);
-        resolve(Object.assign({ ok: true, timedOut, killed, notExited, stdout, stderr }, payload));
+        resolve(Object.assign({ ok: true, timedOut, killed, notExited, stdout, stderr, argv: args, batchLine }, payload));
       };
 
       child.stdout.on("data", (c) => (stdout = capAppend(stdout, c)));
@@ -680,12 +867,19 @@ async function deleteDesktopFile(args) {
   }
 
   // 预演：只报告影响，不校验也不删除
+  // 预演：只报告影响，不校验也不删除
   if (args?.dryRun === true) {
+    let sha = null;
+    try {
+      sha = await sha256OfFile(abs);
+    } catch {
+      // 读不动就只报 size/mtime：预演不该因为算不出哈希而挡路
+    }
     return {
       ok: true,
       dryRun: true,
       path: abs,
-      wouldDelete: { size: st.size, mtimeMs: st.mtimeMs },
+      wouldDelete: { size: st.size, mtimeMs: st.mtimeMs, sha256: sha },
       note: "nothing was deleted; re-call without dryRun (and with confirm + expectedSha256/expectedSize) to delete",
     };
   }
@@ -893,14 +1087,24 @@ function sftpErrorOf(res, verb, timeoutMs) {
     };
   }
   if (res.exitCode !== 0) {
-    return {
+    const out = {
       ok: false,
       error: "sftp " + verb + " failed: exit code " + res.exitCode + (res.signal ? " (signal " + res.signal + ")" : ""),
       exitCode: res.exitCode,
       signal: res.signal,
       sftpStderr: res.stderr || "",
       sftpStdout: res.stdout || "",
+      sftpArgv: res.argv || null,
+      sftpBatch: res.batchLine || null,
     };
+    if (res.exitCode === 255 && !res.stderr && !res.stdout) {
+      out.hint =
+        "sftp exited 255 with zero output. On Windows that is what the OpenSSH client does when it cannot " +
+        "initialise at all — typically a missing environment variable it needs (e.g. %ProgramData%, which is " +
+        "required to read <ProgramData>\\ssh\\ssh_config), or a broken client install. Reproduce by hand with " +
+        "sftpArgv, and check that ProgramData is present in the plugin process env.";
+    }
+    return out;
   }
   return null;
 }
@@ -1524,7 +1728,7 @@ async function onLoad() {
   await pi.agent.registerTool({
     name: "push_desktop_file_to_remote",
     description:
-      "Push a desktop file to the remote host, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): pass host (ssh-config alias or user@host) + remotePath and the file is uploaded with sftp (BatchMode, no interaction, put overwrites an existing remote file). The local source path must not contain the glob metacharacters * ? [ (rejected conservatively; backslashes are fine, so Windows paths work); expectedRemoteSha256 is rejected on the ssh channel. The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized destination; auth via Authorization: Bearer <token> header). Requires explicit user authorization for the specific path and destination. Returns sha256/size for verification.",
+      "Push a desktop file to the remote host, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): call list_ssh_hosts first to see which aliases exist and let the user pick one, then pass host (ssh-config alias or user@host) + remotePath and the file is uploaded with sftp (BatchMode, no interaction, put overwrites an existing remote file). The local source path must not contain the glob metacharacters * ? [ (rejected conservatively; backslashes are fine, so Windows paths work); expectedRemoteSha256 is rejected on the ssh channel. The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized destination; auth via Authorization: Bearer <token> header). Requires explicit user authorization for the specific path and destination. Returns sha256/size for verification.",
     risk: "high",
     schema: {
       type: "object",
@@ -1538,7 +1742,7 @@ async function onLoad() {
         host: {
           type: "string",
           description:
-            "SSH: ssh-config alias (recommended — reuses the desktop's existing ssh config and key, nothing to set up) or user@host. No spaces; must not start with '-'.",
+            "SSH: ssh-config alias on the desktop (recommended — reuses its existing ssh config and key, nothing to set up) or user@host. Call list_ssh_hosts first and let the user pick when it is not obvious. No spaces; must not start with '-'.",
         },
         port: { type: "integer", description: "SSH: TCP port (1-65535) if not already set in the ssh config entry" },
         remotePath: {
@@ -1572,7 +1776,7 @@ async function onLoad() {
   await pi.agent.registerTool({
     name: "pull_remote_file_to_desktop",
     description:
-      "Pull a remote file and save it to a desktop path, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): pass host (ssh-config alias or user@host) + remotePath and the file is downloaded with sftp (BatchMode, no interaction) to a temp file, sha256-verified, then atomically renamed. The remote source path must not contain the glob metacharacters * ? [ (rejected conservatively); expectedRemoteSha256 is honoured on the ssh channel. The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized source; auth via Authorization header). Overwrite requires expectedSha256 of the current target; create requires allowCreate:true. Requires explicit user authorization for the specific path and source.",
+      "Pull a remote file and save it to a desktop path, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): call list_ssh_hosts first to see which aliases exist and let the user pick one, then pass host (ssh-config alias or user@host) + remotePath and the file is downloaded with sftp (BatchMode, no interaction) to a temp file, sha256-verified, then atomically renamed. The remote source path must not contain the glob metacharacters * ? [ (rejected conservatively); expectedRemoteSha256 is honoured on the ssh channel. The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized source; auth via Authorization header). Overwrite requires expectedSha256 of the current target; create requires allowCreate:true. Requires explicit user authorization for the specific path and source.",
     risk: "high",
     schema: {
       type: "object",
@@ -1586,7 +1790,7 @@ async function onLoad() {
         host: {
           type: "string",
           description:
-            "SSH: ssh-config alias (recommended — reuses the desktop's existing ssh config and key, nothing to set up) or user@host. No spaces; must not start with '-'.",
+            "SSH: ssh-config alias on the desktop (recommended — reuses its existing ssh config and key, nothing to set up) or user@host. Call list_ssh_hosts first and let the user pick when it is not obvious. No spaces; must not start with '-'.",
         },
         port: { type: "integer", description: "SSH: TCP port (1-65535) if not already set in the ssh config entry" },
         remotePath: {
@@ -1613,6 +1817,18 @@ async function onLoad() {
     },
     execute: async (args) => pullRemoteFileToDesktop(args),
   });
+  await pi.agent.registerTool({
+    name: "list_ssh_hosts",
+    description:
+      "List the concrete Host aliases defined in the DESKTOP machine's ~/.ssh/config, together with the hostname / port / user each alias resolves to (never key paths). Read-only, no network. Call this FIRST whenever you need to move a file to or from a remote host: show the candidates to the user, let them choose, then pass the chosen alias as the `host` argument of push_desktop_file_to_remote / pull_remote_file_to_desktop. The plugin never picks a host by itself.",
+    risk: "low",
+    schema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    execute: async () => listSshHosts(),
+  });
 }
 
 async function onUnload() {
@@ -1622,6 +1838,7 @@ async function onUnload() {
   await pi.agent.unregisterTool("delete_desktop_file");
   await pi.agent.unregisterTool("push_desktop_file_to_remote");
   await pi.agent.unregisterTool("pull_remote_file_to_desktop");
+  await pi.agent.unregisterTool("list_ssh_hosts");
 }
 
 module.exports = { onLoad, onUnload };
