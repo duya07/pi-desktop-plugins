@@ -113,7 +113,7 @@ PI-Desktop 的 RACP Remote Host 模式下，agent 的工具调用（`Read/Write/
   注册两个工具、读文件 ok/eof/size、base64 解码长度、分块 offset/length/eof、分块内容与整体一致、列目录 ok/count、目录排在文件前、目录当文件读返回错误对象、空 path 返回错误对象、列目录空 path 返回错误对象、不存在路径抛 ENOENT、卸载清空注册。
 - **端到端实测**：经插件读取桌面一个 18028 字节文件 → 落盘远端 → 远端 `sha256` 与桌面侧一致。
 - **0.2.0**：新增 `write_desktop_file`；`node --check` 通过，逻辑测试 **14 项全部通过**（含全部拒绝路径）；官方 `pi-plugin check` = `OK … @0.2.0 — 3 files, 20.7 KB`。
-- **0.3.0**：新增 `delete_desktop_file`；`node --check` 通过，隔离运行时测试 **43 项全部通过**（4 道门禁的全部拒绝路径、16 项保护清单用例、符号链接不跟随、目录不递归、`dryRun` 不落删、`confirm` 严格布尔、`expectedSize` 大文件路径）；官方 `pi-plugin check` = `OK io.github.duya07.desktop-file-reader@0.3.0`（3 个文件）；`pack` 产物挂在 Release `desktop-file-reader-v0.3.0`。测试脚本：`ops/plugin/upstream/test/delete-0.3.0.test.js`。
+- **0.3.0**：新增 `delete_desktop_file`；`node --check` 通过，隔离运行时测试 **43 项全部通过**（4 道门禁的全部拒绝路径、16 项保护清单用例、符号链接不跟随、目录不递归、`dryRun` 不落删、`confirm` 严格布尔、`expectedSize` 大文件路径）；官方 `pi-plugin check` = `OK io.github.duya07.desktop-file-reader@0.3.0`（3 个文件）；`pack` 产物挂在 Release `desktop-file-reader-v0.3.0`。测试脚本：[`tests/desktop-file-reader/delete-0.3.0.test.js`](../../tests/desktop-file-reader/delete-0.3.0.test.js)（在插件目录外，不参与打包）。
 
 ---
 
