@@ -219,9 +219,76 @@ const DEFAULT_REGISTERED = [
   'cline-pass/minimax-m3',
 ]
 
-/** Published entry for one model id, or undefined when the catalog lacks it. */
-function catalogEntry(model) {
-  return MODEL_CATALOG[model]
+/**
+ * The two published sets a user can pick between, in panel order.
+ *
+ * They disagree, and neither is wrong. `models.dev` is what PI-Desktop's own
+ * snapshot publishes for the slug - the values the host resolves for a provider
+ * pointed straight at `api.cline.bot`. `cline-pass` is what **Cline itself**
+ * publishes for the subscription, read on 2026-10-13 from
+ * `sdk/packages/llms/src/catalog/catalog.generated.ts` (provider key
+ * `cline-pass`) plus `cline-recommended.generated.ts` (`clinePass[]`).
+ *
+ * The visible difference is the output cap and the ladder: models.dev reports
+ * 384000 for models Cline's own catalog gives 943718, and Cline's ladder for
+ * `deepseek-v4-pro` is `high/xhigh` where models.dev says `high/max`. Neither
+ * number is harmless to get wrong - the host sizes its prompt budget against the
+ * window - so the choice belongs to the user, and the panel names the set it is
+ * showing.
+ */
+const CATALOG_SOURCES = [
+  { id: 'models.dev', label: 'models.dev（PI-Desktop 自带快照）' },
+  { id: 'cline-pass', label: 'Cline Pass 官方目录（Cline SDK）' },
+]
+
+/**
+ * Cline's own numbers, per model, for the models it publishes.
+ *
+ * Only what Cline's catalog states: window, output cap, the thinking lever and
+ * its levels. Display name and image support stay with the `models.dev` entry -
+ * Cline's generated catalog carries neither, and inventing them here would turn
+ * a second source into a second guess.
+ *
+ * `qwen3.8-max` is the one stand-in: Cline publishes no reasoning options for it
+ * and its numbers are that file's own `CLINE_PASS_MODEL_DEFAULTS`, so it stays
+ * flagged `fallback: true` - which the panel surfaces as "兜底默认值".
+ */
+const CLINE_PUBLISHED = {
+  'cline-pass/deepseek-v4.1-flash': { contextWindow: 1048576, maxTokens: 943718, lever: 'effort', levels: ['low', 'high', 'max'] },
+  'cline-pass/deepseek-v4-pro': { contextWindow: 1048576, maxTokens: 384000, lever: 'effort', levels: ['high', 'xhigh'] },
+  'cline-pass/glm-5.3': { contextWindow: 1048576, maxTokens: 943718, lever: 'effort', levels: ['low', 'high', 'max'] },
+  'cline-pass/glm-5.3-flash': { contextWindow: 1048576, maxTokens: 943717, lever: 'effort', levels: ['low', 'high', 'max'] },
+  'cline-pass/kimi-k3': { contextWindow: 1048576, maxTokens: 943718, lever: 'effort', levels: ['low', 'high', 'max'] },
+  'cline-pass/muse-spark-1.3-contributor': { contextWindow: 1048576, maxTokens: 943718, lever: 'effort', levels: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+  'cline-pass/minimax-m3': { contextWindow: 1048576, maxTokens: 512000, lever: 'toggle', levels: [] },
+  'cline-pass/mimo-v2.5': { contextWindow: 1050000, maxTokens: 131072, lever: 'toggle', levels: [] },
+  'cline-pass/mimo-v2.5-pro': { contextWindow: 1050000, maxTokens: 131072, lever: 'toggle', levels: [] },
+  'cline-pass/mimo-v2.6-flash': { contextWindow: 1050000, maxTokens: 131072, lever: 'toggle', levels: [] },
+  'cline-pass/mimo-v2.6-pro': { contextWindow: 1050000, maxTokens: 131072, lever: 'toggle', levels: [] },
+  'cline-pass/qwen3.7-max': { contextWindow: 1000000, maxTokens: 131072, lever: 'toggle', levels: [] },
+  'cline-pass/qwen3.7-plus': { contextWindow: 1000000, maxTokens: 131072, lever: 'toggle', levels: [] },
+  'cline-pass/qwen3.8-max': { contextWindow: 128000, maxTokens: 8192, lever: 'none', levels: [], fallback: true },
+}
+
+/**
+ * Published entry for one model id, or undefined when the catalog lacks it.
+ *
+ * `source` selects the published set; an unknown source reads as `models.dev`,
+ * and a model Cline's table does not cover keeps its `models.dev` numbers rather
+ * than silently losing them.
+ */
+function catalogEntry(model, source = CATALOG_SOURCES[0].id) {
+  const base = MODEL_CATALOG[model]
+  if (!base) return undefined
+  const published = source === 'cline-pass' ? CLINE_PUBLISHED[model] : undefined
+  if (!published) return base
+  return {
+    ...base,
+    contextWindow: published.contextWindow,
+    maxTokens: published.maxTokens,
+    thinking: { lever: published.lever, levels: published.levels },
+    ...published.fallback === true ? { fallback: true } : {},
+  }
 }
 
 /** The effort levels one model publishes, or `[]` when it takes no effort. */
@@ -245,28 +312,62 @@ function defaultThinkingLevel(entry) {
 /**
  * The `/v1/models` payload the gateway serves.
  *
+ * The ids are re-spelled by `importModelId` so this endpoint agrees with the
+ * generated import config instead of contradicting it: the host probes this
+ * endpoint once the imported provider is added, stores what it reads in its own
+ * model table, and a catalog id here would put the colliding `cline-pass/x`
+ * spelling - the one the import prefix exists to avoid - back into the picker.
+ * The gateway maps the prefix back (`normalizeModelId`), so a plain OpenAI
+ * client that reads this list sends back exactly what it was given.
+
+ * `name`, `context_window`, `max_tokens` and `capabilities` are the model's
+ * *effective* values - the catalog merged with the panel's overrides - so a
+ * rename or a re-sized window in the panel reaches whoever probes this endpoint,
+ * and this list never contradicts the config the plugin generates. (`thinking`
+ * stays the catalog's lever: the panel does not edit it.)
+ *
  * The plugin declares no models to the host any more, so this endpoint is what
  * keeps the gateway discoverable for anyone pointing a plain OpenAI client (or a
  * second harness) at it. `registered` now means "written into the generated
  * import config", which is exactly what the panel's checkbox toggles.
  */
 function modelsEndpointPayload(effective) {
+  // Lazy on purpose: `models.js` requires this module at load time, so a
+  // top-level require here would see its half-built exports - the same reason
+  // `models.js` reads `config.js` lazily.
+  const { importModelId } = require('./models.js')
   const rows = Array.isArray(effective)
-    ? effective.map((model) => ({ id: model.id, entry: catalogEntry(model.id), registered: model.registered !== false }))
-    : Object.entries(MODEL_CATALOG).map(([id, entry]) => ({ id, entry, registered: DEFAULT_REGISTERED.includes(id) }))
+    ? effective.map((model) => ({
+        id: model.id,
+        entry: catalogEntry(model.id),
+        name: model.name,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+        supportsImages: model.supportsImages === true,
+        registered: model.registered !== false,
+      }))
+    : Object.entries(MODEL_CATALOG).map(([id, entry]) => ({
+        id,
+        entry,
+        name: entry.name,
+        contextWindow: entry.contextWindow,
+        maxTokens: entry.maxTokens,
+        supportsImages: entry.supportsImages,
+        registered: DEFAULT_REGISTERED.includes(id),
+      }))
   return {
     object: 'list',
     data: rows
       .filter((row) => row.entry)
-      .map(({ id, entry, registered }) => ({
-        id,
+      .map(({ id, entry, name, contextWindow, maxTokens, supportsImages, registered }) => ({
+        id: importModelId(id),
         object: 'model',
         created: 0,
         owned_by: 'cline-pass',
-        name: entry.name,
-        context_window: entry.contextWindow,
-        max_tokens: entry.maxTokens,
-        capabilities: entry.supportsImages ? ['text', 'image'] : ['text'],
+        name: name || entry.name,
+        context_window: contextWindow ?? entry.contextWindow,
+        max_tokens: maxTokens ?? entry.maxTokens,
+        capabilities: supportsImages ? ['text', 'image'] : ['text'],
         thinking: entry.thinking.lever,
         registered,
       })),
@@ -280,6 +381,8 @@ module.exports = {
   PI_DEFAULT_THINKING_LEVEL,
   reasoningEffortFor,
   MODEL_CATALOG,
+  CATALOG_SOURCES,
+  CLINE_PUBLISHED,
   DEFAULT_REGISTERED,
   catalogEntry,
   effortLevelsFor,

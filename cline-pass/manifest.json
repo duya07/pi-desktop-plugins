@@ -3,17 +3,17 @@
   "id": "io.github.duya07.cline-pass",
   "name": "Cline Pass 本地网关",
   "version": "1.0.0",
-  "description": "把 DSH 的 dsh-cline-pass 移植到 PI-Desktop：声明一个指向本机网关的 provider，并在网关里实现上游通道枚举与校验、按通道 pin/exclude 与 failover、账号池与冷却、流式空闲超时、思考档位映射，另附管理面板与 cline_pass_* agent 工具。",
+  "description": "把 DSH 的 dsh-cline-pass 移植到 PI-Desktop：生成一份指向本机网关的导入配置（不再声明 provider，模型由你自己导入），网关内实现上游通道枚举与校验、按通道 pin/exclude 与 failover、账号池与冷却、流式空闲超时、思考档位映射，另附管理面板与 cline_pass_* agent 工具。",
   "i18n": {
     "en": {
       "name": "Cline Pass Local Gateway",
-      "description": "Port of the DSH plugin dsh-cline-pass: a declared provider that points at a local gateway, which owns upstream channel discovery and validation, per-channel pin/exclude with failover, the account pool with cooldowns, stream idle timeouts and thinking-level translation - plus a management panel and cline_pass_* agent tools.",
-      "safetyNotes": "The plugin listens on 127.0.0.1 only and accepts requests from this machine. Credentials live in the plugin's data directory (config.json, written 0600 where the platform honours it); the key typed into the model settings page is used in memory for the request that carried it and is never copied to disk. Upstream traffic goes to the Cline Pass endpoint configured in the panel (default https://api.cline.bot/api/v1)."
+      "description": "Port of the DSH plugin dsh-cline-pass: an import config that points at a local gateway (the plugin declares no provider - you import the models yourself), plus a gateway that owns upstream channel discovery and validation, per-channel pin/exclude with failover, the account pool with cooldowns, stream idle timeouts and thinking-level translation - with a management panel and cline_pass_* agent tools.",
+      "safetyNotes": "The plugin listens on 127.0.0.1 only and accepts requests from this machine. Credentials live in the plugin's data directory (config.json, written 0600 where the platform honours it); the key typed into the model settings page is used in memory for the request that carried it and is never copied to disk. Upstream traffic goes to the Cline Pass endpoint configured in the panel (default https://api.cline.bot/api/v1). One panel button writes the host's own database: the host's import format has no thinking-level field, so it copies the plugin's ladder into the thinkingLevels / defaultThinkingLevel of the provider row that points at this gateway - only that row, only those two fields, the original saved first so it can be undone, and saving that provider in the settings page overwrites it."
     },
     "zh-CN": {
       "name": "Cline Pass 本地网关",
-      "description": "DSH 插件 dsh-cline-pass 的 PI-Desktop 移植：声明一个指向本机网关的 provider，网关内实现上游通道枚举与校验、按通道 pin/exclude 与 failover、账号池与冷却、流式空闲超时、思考档位映射，并附带管理面板与 cline_pass_* 工具。",
-      "safetyNotes": "网关只监听 127.0.0.1，仅接受本机请求。凭据存放在插件数据目录的 config.json（在支持的平台上写入 0600 权限）；模型设置页里填的 key 只在当次请求的内存中使用，不会写入磁盘。上游流量只发往面板中配置的 Cline Pass 端点（默认 https://api.cline.bot/api/v1）。"
+      "description": "DSH 插件 dsh-cline-pass 的 PI-Desktop 移植：生成一份指向本机网关的导入配置（插件不再声明 provider，模型由你自己导入），网关内实现上游通道枚举与校验、按通道 pin/exclude 与 failover、账号池与冷却、流式空闲超时、思考档位映射，并附带管理面板与 cline_pass_* 工具。",
+      "safetyNotes": "网关只监听 127.0.0.1，仅接受本机请求。凭据存放在插件数据目录的 config.json（在支持的平台上写入 0600 权限）；模型设置页里填的 key 只在当次请求的内存中使用，不会写入磁盘。上游流量只发往面板中配置的 Cline Pass 端点（默认 https://api.cline.bot/api/v1）。面板上有一个按钮会写宿主自己的数据库：宿主的导入格式没有思考档位字段，所以它把插件目录里的档位写进「指向本网关那一行」的 thinkingLevels / defaultThinkingLevel —— 只改那一行、只改这两个字段，原值先存好可随时撤销；在设置页保存那条 provider 会覆盖回去。"
     }
   },
   "author": "duya07",

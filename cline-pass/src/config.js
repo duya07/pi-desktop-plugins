@@ -54,6 +54,10 @@ function defaultConfig() {
     probeTimeoutMs: 60000,
     maxConcurrentRequests: 16,
     historyLimit: 100,
+    // Which published set the model defaults come from (`catalog.js`
+    // `CATALOG_SOURCES`). Not a per-model field: the two sets describe the same
+    // subscription, and a user picks one reading of it.
+    catalogSource: 'models.dev',
     modelSettings: {},
   }
 }
@@ -64,6 +68,7 @@ function normalize(raw) {
   const config = { ...base, ...(raw && typeof raw === 'object' ? raw : {}) }
   if (typeof config.baseUrl !== 'string' || !/^https?:\/\//.test(config.baseUrl)) config.baseUrl = DEFAULT_BASE_URL
   if (config.accountMode !== 'single' && config.accountMode !== 'roundrobin') config.accountMode = 'roundrobin'
+  if (config.catalogSource !== 'cline-pass') config.catalogSource = 'models.dev'
   if (!Array.isArray(config.accounts) || config.accounts.length === 0) config.accounts = base.accounts
   config.accounts = config.accounts
     .filter((entry) => entry && typeof entry === 'object')

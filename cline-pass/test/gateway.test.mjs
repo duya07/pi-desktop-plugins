@@ -389,8 +389,20 @@ test('gateway serves the model list and rejects foreign hosts', async () => {
   // models the generated config carries - the ones the user ticked.
   const registered = payload.data.filter((row) => row.registered)
   assert.equal(registered.length, 5)
-  assert.deepEqual(registered.map((row) => row.id).sort(), [...catalog.DEFAULT_REGISTERED].sort())
-  const flash = payload.data.find((row) => row.id === MODEL)
+  // The endpoint has to advertise the *imported* spelling: the host stores what
+  // it reads here as this provider's models, so a catalog id would put the
+  // colliding `cline-pass/x` name back into the picker. These have to be the
+  // exact ids the generated config hands the user.
+  const generatedIds = modelRegistry
+    .importConfigPayload({})
+    .providers[modelRegistry.IMPORT_PROVIDER_ID].models.map((model) => model.id)
+  assert.deepEqual(registered.map((row) => row.id).sort(), [...generatedIds].sort())
+  for (const row of payload.data) {
+    const catalogId = modelRegistry.unimportModelId(row.id)
+    assert.ok(catalogId, row.id + ' is not in the imported spelling')
+    assert.ok(catalog.catalogEntry(catalogId), row.id + ' does not map back to a catalog model')
+  }
+  const flash = payload.data.find((row) => row.id === modelRegistry.importModelId(MODEL))
   assert.equal(flash.object, 'model')
   assert.equal(flash.owned_by, 'cline-pass')
   assert.equal(flash.name, 'DeepSeek V4.1 Flash')
@@ -398,15 +410,95 @@ test('gateway serves the model list and rejects foreign hosts', async () => {
   assert.equal(flash.max_tokens, 384000)
   assert.deepEqual(flash.capabilities, ['text', 'image'])
   assert.equal(flash.thinking, 'effort')
-  const minimax = payload.data.find((row) => row.id === 'cline-pass/minimax-m3')
+  const minimax = payload.data.find((row) => row.id === modelRegistry.importModelId('cline-pass/minimax-m3'))
   assert.equal(minimax.thinking, 'toggle')
   assert.equal(minimax.registered, true)
-  const unticked = payload.data.find((row) => row.id === 'cline-pass/qwen3.8-max')
+  const unticked = payload.data.find((row) => row.id === modelRegistry.importModelId('cline-pass/qwen3.8-max'))
   assert.equal(unticked.context_window, 1000000)
   assert.equal(unticked.max_tokens, 131072)
   assert.equal(unticked.registered, false, 'only the ticked models are in the generated config')
   assert.equal(await rawStatus('/v1/models', { host: 'evil.example' }), 403)
   assert.equal(await rawStatus('/v1/models', { host: `127.0.0.1:${gateway.port}` }), 200)
+})
+
+
+test('the host row wins over the panel and the catalog', () => {
+  // The inversion in one test: once the row the user imported exists, it owns the
+  // numbers - a panel override cannot quietly disagree with what the settings page
+  // and the picker show. The panel only covers a model the host has no row for.
+  const host = new Map([
+    ['cline-pass/deepseek-v4.1-flash', {
+      id: 'cline-pass-local/deepseek-v4.1-flash',
+      contextWindow: 4242,
+      maxTokens: 111,
+      supportsImages: false,
+      thinkingLevels: ['off', 'max'],
+      defaultThinkingLevel: 'max',
+    }],
+  ])
+  const panel = {
+    'cline-pass/deepseek-v4.1-flash': { contextWindow: 1999, maxTokens: 888, thinkingLevels: ['off', 'low'] },
+    'cline-pass/kimi-k3': { maxTokens: 777 },
+  }
+  const owned = modelRegistry.effectiveModels(panel, 'models.dev', host).find((model) => model.id === 'cline-pass/deepseek-v4.1-flash')
+  assert.equal(owned.contextWindow, 4242, 'the host window beats the panel override')
+  assert.equal(owned.maxTokens, 111, 'the host output cap beats the panel override')
+  assert.equal(owned.supportsImages, false, 'the host image flag beats the panel override')
+  assert.deepEqual(owned.thinkingLevels, ['off', 'max'], 'the host ladder beats the panel ladder')
+  assert.equal(owned.defaultThinkingLevel, 'max')
+  assert.deepEqual(owned.origin, {
+    contextWindow: 'host',
+    maxTokens: 'host',
+    supportsImages: 'host',
+    thinkingLevels: 'host',
+    defaultThinkingLevel: 'host',
+  })
+  assert.equal(owned.host.contextWindow, 4242, 'the host block is carried for the comparison card')
+  const fallback = modelRegistry.effectiveModels(panel, 'models.dev', host).find((model) => model.id === 'cline-pass/kimi-k3')
+  assert.equal(fallback.maxTokens, 777, 'the panel covers a model the host has no row for')
+  assert.equal(fallback.origin.maxTokens, 'panel')
+  assert.equal(fallback.origin.contextWindow, 'catalog')
+  assert.equal(fallback.host, null)
+  // Without a host map nothing changes, which is what a fresh install looks like.
+  const plain = modelRegistry.effectiveModels(panel, 'models.dev').find((model) => model.id === 'cline-pass/deepseek-v4.1-flash')
+  assert.equal(plain.contextWindow, 1999)
+  assert.equal(plain.origin.contextWindow, 'panel')
+})
+test('the published-set switch changes the defaults and the broadcast', async () => {
+  // The two sets disagree on purpose (Cline's own catalog vs models.dev), and the
+  // panel picks one; nothing else in the plugin may quietly prefer one of them.
+  const devEntry = catalog.catalogEntry('cline-pass/deepseek-v4.1-flash', 'models.dev')
+  const clineEntry = catalog.catalogEntry('cline-pass/deepseek-v4.1-flash', 'cline-pass')
+  assert.equal(devEntry.maxTokens, 384000)
+  assert.equal(clineEntry.maxTokens, 943718, 'Cline publishes a different output cap for the same slug')
+  assert.deepEqual(clineEntry.thinking.levels, ['low', 'high', 'max'])
+  assert.equal(clineEntry.contextWindow, 1048576)
+  // Cline's catalog carries no display name or image support, so those stay with
+  // the models.dev entry instead of being invented.
+  assert.equal(clineEntry.name, devEntry.name)
+  assert.equal(clineEntry.supportsImages, devEntry.supportsImages)
+  // An unknown source reads as models.dev rather than as nothing.
+  assert.deepEqual(catalog.catalogEntry('cline-pass/glm-5.3', 'nonsense'), catalog.catalogEntry('cline-pass/glm-5.3', 'models.dev'))
+  // Cline publishes no reasoning options for qwen3.8-max, so it stays a stand-in.
+  assert.equal(modelRegistry.effectiveModels({}, 'cline-pass').find((model) => model.id === 'cline-pass/qwen3.8-max').fallback, true)
+  try {
+    const result = await gateway.ops.setConfig({ catalogSource: 'cline-pass' })
+    assert.equal(result.ok, true)
+    assert.equal(result.config.catalogSource, 'cline-pass')
+    assert.equal(configStore.get().catalogSource, 'cline-pass')
+    const listed = (await (await fetch(base + '/v1/models')).json()).data
+      .find((row) => row.id === modelRegistry.importModelId('cline-pass/deepseek-v4.1-flash'))
+    assert.equal(listed.max_tokens, 943718, 'the broadcast follows the chosen set')
+    assert.equal(listed.context_window, 1048576)
+    // The generated config carries the same set, so an import seeds it.
+    const seeded = modelRegistry.importConfigPayload({}, 'cline-pass').providers[modelRegistry.IMPORT_PROVIDER_ID].models
+      .find((model) => model.id === modelRegistry.importModelId('cline-pass/deepseek-v4.1-flash'))
+    assert.equal(seeded.limit.output, 943718)
+    assert.throws(() => gateway.ops.setConfig({ catalogSource: 'nope' }), /nothing to update/)
+  } finally {
+    configStore.update({ catalogSource: 'models.dev' })
+  }
+  assert.equal(configStore.get().catalogSource, 'models.dev')
 })
 
 test('gateway streams an OpenAI SSE answer and records the request', async () => {
@@ -994,6 +1086,15 @@ test('model settings: fourteen models, five registered, nothing edited', () => {
     lever: 'effort',
     fallback: false,
     edited: [],
+    // No host row was read here, so every value is the catalog's.
+    origin: {
+      contextWindow: 'catalog',
+      maxTokens: 'catalog',
+      supportsImages: 'catalog',
+      thinkingLevels: 'catalog',
+      defaultThinkingLevel: 'catalog',
+    },
+    host: null,
   })
   // Nothing is a stand-in any more: the last one (qwen3.8-max) turned out to be
   // published after all, so every entry carries published numbers.
@@ -1319,6 +1420,23 @@ test('setModel writes config.json only, and the shipped manifest is untouched', 
     const payload = modelRegistry.importConfigPayload(configStore.get().modelSettings)
     const glm = payload.providers[modelRegistry.IMPORT_PROVIDER_ID].models.find((model) => model.id === modelRegistry.importModelId('cline-pass/glm-5.3'))
     assert.equal(glm.limit.context, 123456)
+    // A rename reaches the host through the probe, not the import: the host's pi
+    // reader drops a model's `name` (measured on 0.20.1: the stored row carries
+    // neither name nor alias), while it stores what /v1/models reports as the
+    // display name. So the endpoint has to speak the panel's effective name.
+    const renamed = await gateway.ops.setModel({ model: 'cline-pass/glm-5.3', name: 'GLM 改名' })
+    assert.equal(renamed.ok, true)
+    const listed = (await (await fetch(base + '/v1/models')).json()).data
+    const listedGlm = listed.find((row) => row.id === modelRegistry.importModelId('cline-pass/glm-5.3'))
+    assert.equal(listedGlm.name, 'GLM 改名')
+    // ...and the numbers too, not just the label: the endpoint speaks the panel's
+    // effective values, so a probe stores what the panel shows instead of the
+    // catalog's own window.
+    assert.equal(listedGlm.context_window, 123456, 'the broadcast carries the panel override, not the catalog value')
+    const renamedPayload = modelRegistry.importConfigPayload(configStore.get().modelSettings)
+    const renamedRow = renamedPayload.providers[modelRegistry.IMPORT_PROVIDER_ID].models
+      .find((model) => model.id === modelRegistry.importModelId('cline-pass/glm-5.3'))
+    assert.equal(renamedRow.name, 'GLM 改名', 'the generated config still carries the label for a host that reads it')
     assert.equal(fs.readFileSync(manifestPath, 'utf8'), before, 'the shipped manifest must survive a setModel')
     assert.equal(fs.existsSync(`${manifestPath}.bak`), false)
     // An unknown or missing model is refused before anything is written.
@@ -1647,6 +1765,14 @@ test('wiring smoke: a second gateway starts, serves its state and writes its led
     assert.equal(state.models.length, 14)
     assert.equal(state.models.filter((row) => row.registered).length, 5)
     assert.equal(state.models[0].published.contextWindow, 1000000)
+    // The panel needs the per-field origin and the host block to mark a field the
+    // host owns. A status payload that drops them turns the whole host-first
+    // design back into "every field looks editable" - which is exactly what
+    // happened once, so it is pinned here.
+    const firstModel = state.models[0]
+    assert.ok(firstModel.origin && typeof firstModel.origin === 'object', 'status models carry an origin map')
+    assert.ok(['host', 'panel', 'catalog'].includes(firstModel.origin.contextWindow), 'origin.contextWindow names a known source')
+    assert.ok('host' in firstModel, 'status models carry the host block (null when there is no row)')
     const empty = smoke.ops.usage({ days: 0 })
     assert.equal(empty.ok, true)
     assert.equal(empty.rows, 0)

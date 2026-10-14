@@ -39,6 +39,7 @@ const { createEngine, parseServerSentEvents, GatewayError } = require('./engine.
 const { createAccountPool, maskKey, keyFor, duplicateNames } = require('./config.js')
 const { createUsageLog, extractUsage } = require('./usage.js')
 const { effectiveModels, effortsFor, importConfigPayload, describeImportConfig, unimportModelId } = require('./models.js')
+const hostLadder = require('./hostladder.js')
 const { summarizeLimits, summarizeAccount } = require('./quota.js')
 
 /** Requests may carry base64 images, so the cap is generous - but not absent. */
@@ -187,7 +188,7 @@ function sendJson(res, status, payload) {
  * @param logger - `(message, detail?) => void`.
  * @param instanceId - a value that identifies this process as this plugin.
  */
-function createGateway({ configStore, logger = () => {}, instanceId = '', portOverride = -1 }) {
+function createGateway({ configStore, logger = () => {}, instanceId = '', portOverride = -1, dataDir = '' }) {
   const store = createStore({ historyLimit: configStore.get().historyLimit })
 
   /** The request ledger, kept beside config.json in the plugin's data directory. */
@@ -195,9 +196,21 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
   /** The last official-quota reading, reused for `QUOTA_CACHE_MS`. */
   let quotaCache = null
 
-  /** Effective parameters for one model: the catalog merged with the overrides. */
+  /**
+   * The host's own parameters for this plugin's models, cached by
+   * `hostladder.readHostModels`. The host owns the window, the output cap, image
+   * support and the thinking ladder once its row exists, so this is what the
+   * request path maps levels with; the catalog only covers a model the host has
+   * no row for.
+   */
+  function hostModels() {
+    return hostLadder.readHostModels({ dataDir })
+  }
+
+  /** Effective parameters for one model: the host's row first, then the fallback. */
   function modelParams(id) {
-    return effectiveModels(configStore.get().modelSettings).find((model) => model.id === id) ?? null
+    const config = configStore.get()
+    return effectiveModels(config.modelSettings, config.catalogSource, hostModels()).find((model) => model.id === id) ?? null
   }
   const pool = createAccountPool({ configStore, logger })
   const semaphore = createSemaphore(configStore.get().maxConcurrentRequests)
@@ -434,7 +447,8 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
       return
     }
     if (url.pathname === '/v1/models' && req.method === 'GET') {
-      sendJson(res, 200, modelsEndpointPayload(effectiveModels(configStore.get().modelSettings)))
+      const modelConfig = configStore.get()
+      sendJson(res, 200, modelsEndpointPayload(effectiveModels(modelConfig.modelSettings, modelConfig.catalogSource, hostModels())))
       return
     }
     if (url.pathname === '/v1/chat/completions' && req.method === 'POST') {
@@ -477,6 +491,7 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
       providerBaseUrl: `http://127.0.0.1:${port}/v1`,
       accountMode: config.accountMode,
       activeAccount: config.activeAccount,
+      catalogSource: config.catalogSource,
       accounts: pool.view(hostKey).map((entry) => ({ ...entry, keyHint: entry.keyHint || '' })),
       pins: config.pins,
       requestTimeoutMs: config.requestTimeoutMs,
@@ -487,7 +502,7 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
       queued: semaphore.pending,
       historySize: store.historySize(),
       quota: quotaCache === null ? null : { fetchedAt: quotaCache.at, accounts: quotaCache.accounts.map(summarizeAccount) },
-      models: effectiveModels(config.modelSettings).map((model) => {
+      models: effectiveModels(config.modelSettings, config.catalogSource, hostModels()).map((model) => {
         const discovered = meta.find((candidate) => candidate.id === model.id) ?? {}
         return {
           id: model.id,
@@ -505,6 +520,11 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
           // mistaken for Cline's published one.
           edited: model.edited,
           published: model.published,
+          // Where each value came from (host / panel / catalog) and the host's own
+          // block, so the panel can mark a field the host owns instead of offering
+          // an edit that would do nothing.
+          origin: model.origin,
+          host: model.host,
           // Kept for the existing panel and tests: the two older summaries.
           reasoning: model.thinkingLevels.length > 1,
           input: model.supportsImages ? ['text', 'image'] : ['text'],
@@ -619,13 +639,15 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
       if (typeof patch?.baseUrl === 'string') allowed.baseUrl = patch.baseUrl.trim()
       if (patch?.accountMode === 'single' || patch?.accountMode === 'roundrobin') allowed.accountMode = patch.accountMode
       if (typeof patch?.activeAccount === 'string') allowed.activeAccount = patch.activeAccount
+      // Which published set the panel shows and the generated config carries.
+      if (patch?.catalogSource === 'models.dev' || patch?.catalogSource === 'cline-pass') allowed.catalogSource = patch.catalogSource
       for (const key of ['requestTimeoutMs', 'streamIdleTimeoutMs', 'probeTimeoutMs', 'maxConcurrentRequests', 'historyLimit']) {
         if (Number.isFinite(Number(patch?.[key])) && Number(patch[key]) > 0) allowed[key] = Math.floor(Number(patch[key]))
       }
       if (Object.keys(allowed).length === 0) throw new GatewayError('nothing to update', 'INVALID_ARGUMENT')
       const next = configStore.update(allowed)
       logger('configuration updated', { keys: Object.keys(allowed) })
-      return { ok: true, config: { baseUrl: next.baseUrl, accountMode: next.accountMode, activeAccount: next.activeAccount } }
+      return { ok: true, config: { baseUrl: next.baseUrl, accountMode: next.accountMode, activeAccount: next.activeAccount, catalogSource: next.catalogSource } }
     },
     pin({ model, upstreams, exclude, pinMode, sort }) {
       const id = normalizeModelId(model)

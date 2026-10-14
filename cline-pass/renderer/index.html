@@ -244,7 +244,7 @@
       details.model-entry > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; list-style: none; min-width: 0; }
       details.model-entry > summary::-webkit-details-marker { display: none; }
       .model-body { padding-top: 10px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-      #model-settings > .hint { line-height: 1.75; max-width: 72ch; }
+      #model-settings > .hint { line-height: 1.75; }
       #model-settings > .hint + .hint { margin-top: -6px; }
       .levels { display: flex; gap: 6px; flex-wrap: wrap; }
       .levels label { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; min-width: 0; background: var(--card); cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease; font-size: 12px; line-height: 1.4; }
@@ -304,6 +304,20 @@
       #config-json[hidden] { display: none; }
       .generate-steps { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.7; }
       .generate-steps li { overflow-wrap: anywhere; }
+            /* imported card: three formerly stacked cards merged into one */
+      #import-and-params { gap: 0; }
+      #import-and-params > h3 { margin-bottom: 2px; }
+      #import-and-params > .hint { margin-bottom: 10px; }
+      .import-section { display: flex; flex-direction: column; gap: 10px; padding: 16px 0 0; min-width: 0; }
+      .import-section:first-of-type { padding-top: 12px; }
+      .import-section + .import-section { border-top: 1px solid var(--line); margin-top: 16px; }
+      .import-title { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.4; display: flex; align-items: center; gap: 8px; color: var(--ink); }
+      .import-section details, #model-settings details { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 12px; background: color-mix(in srgb, var(--card) 96%, var(--bg)); }
+      .import-section details[open], #model-settings details[open] { background: var(--bg); border-color: color-mix(in srgb, var(--line) 80%, var(--accent) 20%); }
+      .import-section details summary, #model-settings details summary { cursor: pointer; display: flex; align-items: center; gap: 6px; list-style: none; font-size: 12px; color: var(--ink-soft); font-weight: 500; user-select: none; }
+      .import-section details summary::-webkit-details-marker, #model-settings details summary::-webkit-details-marker { display: none; }
+      .import-section details > div.hint, .import-section details > ol, #model-settings details > div.hint, #model-settings details > ol { margin-top: 8px; }
+      .import-section details > div.hint:first-of-type, #model-settings details > div.hint:first-of-type { margin-top: 10px; }
       @media (prefers-reduced-motion: reduce) {
         .spin { animation: none; }
         .quota-fill { transition: none; }
@@ -328,6 +342,7 @@
       <nav class="tabs" id="tabs">
         <button data-tab="accounts" aria-selected="true">账号池</button>
         <button data-tab="models" aria-selected="false">模型与通道</button>
+        <button data-tab="import" aria-selected="false">导入与参数</button>
         <button data-tab="history" aria-selected="false">请求历史</button>
         <button data-tab="usage" aria-selected="false">用量</button>
         <button data-tab="settings" aria-selected="false">设置</button>
@@ -415,32 +430,98 @@
               </div>
             </div>
           </div>
-          <div class="card" id="generate-config-card">
-            <h3>生成配置（导入到模型配置）</h3>
-            <div class="hint">插件不再自动注册模型，用下面这个按钮生成一份 JSON，拿到 PI-Desktop 的 模型配置 →「从其他工具导入」→ 扫描 → 勾选「Cline Pass（本地网关）」→ 导入，就会得到你自己的 provider（可编辑、可勾「可供 AI 自动调度」，子代理才会用它）。网关必须处于运行状态。</div>
-            <div class="hint"><b class="warn-text">生成配置里的模型 id 是 <code>cline-pass-local/&lt;模型&gt;</code>，不是 <code>cline-pass/&lt;模型&gt;</code>。</b>这是故意的：宿主给子代理用的委派 key 是 <code>&lt;vendorKey&gt;/&lt;模型 id&gt;</code>，而你自建的 provider 全都是 <code>custom</code>，所以导入的模型 id 一旦和「直连 <code>api.cline.bot</code> 那条 provider」的模型 id 相同，两条就撞成同一个 key，子代理可能被<b>那条</b>接走（账号池 / pin / failover / 账本都看不到这部分流量）。<b>网关两种拼写都认</b>：<code>cline-pass-local/x</code> 与 <code>cline-pass/x</code> 都路由到同一个模型，所以你手动改回旧拼写、或留着以前生成的配置，都<b>不会</b>路由不回去 —— 只是那时又会和直连那条撞名。重命名 provider <b>没有用</b>：委派 key 里只有 vendorKey 和模型 id，不含 provider 名字。</div>
-            <div class="row"><button class="primary" id="generate-config">生成配置</button><button class="primary" id="write-config">写入文件</button><button id="copy-config">复制</button><span class="hint" id="generate-config-meta"></span></div>
-            <div class="hint" id="generate-config-path" hidden></div>
-            <textarea id="config-json" readonly hidden placeholder="点「生成配置」后这里会出现 JSON"></textarea>
-            <div class="hint" id="generate-config-hint"></div>
-            <ol class="generate-steps">
-              <li>点「生成配置」→ 再点「写入文件」：第一次会弹系统目录选择器，选 <b>C:\Users\&lt;你&gt;\.pi\agent</b>（目录不存在就先建一个）；</li>
-              <li>打开 设置 → 模型配置 →「从其他工具导入」→ 扫描 → 勾选「Cline Pass（本地网关）」→ 导入所选；</li>
-              <li>导入后在该 provider 的模型卡里勾上「可供 AI 自动调度」（子代理才会用它）；</li>
-              <li>不想授权写盘就用「复制」自己存成同一个路径；导入完成后这个文件可以删掉。</li>
-            </ol>
-            <div class="hint">本插件只往你选的那个目录里写一个 <b>models.json</b>（不读、不删别的文件）。目录选择器是模态窗口，请在 30 秒内选完；万一面板提示超时，直接再点一次「写入文件」——目录已经记住，这次是秒写。插件重载后需要重新选一次目录。</div>
-            <div class="hint">导入的 provider 是"你自己的"，插件不再自动注册模型；网关必须处于运行状态（顶部的状态行会显示）。</div>
-          </div>
-          <div class="card" id="model-settings">
-        <h3>模型参数（写进生成的配置）</h3>
-            <div class="hint">
-              这些参数会写进插件自己的配置，并出现在「生成配置」产出的 JSON 里；导入到你自己的 provider 后，宿主模型选择器才看得到它们。保存时只提交已改动的字段。列表里显示的是<b>目录 id</b>（<code>cline-pass/&lt;模型&gt;</code>）；写进生成配置时会加上 <code>cline-pass-local/</code> 前缀 —— 原因见上方「生成配置」卡片里的说明。
-            </div>
-            <div class="hint">
-          「已改」= 这个字段被本面板覆盖过；「官方值」= models.dev 的值，只作对照，不会自动回写。档位控件来自 models.dev 的 reasoning_options：effort 是滑杆、toggle 是开关、none 表示该模型没有思考档位。
-            </div>
+
+          <div class="card" id="model-list-card">
+            <h3>模型列表（各模型的参数）</h3>
+            <div class="hint">数值来源与参数说明在「导入与参数 → 模型参数」里；这里显示的「官方值」按那个来源算。</div>
             <div id="model-settings-list"></div>
+          </div>
+        </section>
+
+        <section id="tab-import" hidden>
+          <div class="card" id="import-and-params">
+            <h3>导入与模型参数</h3>
+            <div class="hint">模型参数决定生成配置的数值，生成后导入宿主即可使用；导入后档位不一致时可一键对齐。</div>
+
+            <section class="import-section" id="generate-config-card">
+              <h4 class="import-title">生成配置（导入到模型配置）</h4>
+              <div class="hint">生成一份 JSON，拿到宿主「模型配置 → 从其他工具导入」扫描并导入，即可得到可编辑的本地 provider。</div>
+              <div class="hint"><b class="warn-text">生成配置里的模型 id 是 <code>cline-pass-local/&lt;模型&gt;</code>，不是 <code>cline-pass/&lt;模型&gt;</code>。</b> 重命名 provider <b>没有用</b>，委派 key 仅含 <code>vendorKey</code> 与模型 id。</div>
+              <div class="row"><button class="primary" id="generate-config">生成配置</button><button class="primary" id="write-config">写入文件</button><button id="copy-config">复制</button><span class="hint" id="generate-config-meta"></span></div>
+              <div class="hint" id="generate-config-path" hidden></div>
+              <textarea id="config-json" readonly hidden placeholder="点「生成配置」后这里会出现 JSON"></textarea>
+              <div class="hint" id="generate-config-hint"></div>
+              <details>
+                <summary>说明</summary>
+                <div class="hint">插件不再自动注册模型，网关需处于运行状态。导入后请在宿主模型卡勾上「可供 AI 自动调度」，子代理才会使用。</div>
+                <div class="hint">为什么要加前缀：宿主给子代理的委派 key 为 <code>&lt;vendorKey&gt;/&lt;模型 id&gt;</code>，自建 provider 的 <code>vendorKey</code> 均为 <code>custom</code>，若模型 id 与直连 <code>api.cline.bot</code> 的那条一致，会撞成同一 key，子代理可能被那条接走（账号池 / pin / 账本均不可见）。</div>
+                <div class="hint"><b>网关两种拼写都认</b>：<code>cline-pass-local/x</code> 与 <code>cline-pass/x</code> 均可路由，旧配置无需手动改回，只是会重新撞名。</div>
+                <ol class="generate-steps">
+                  <li>点「生成配置」→ 再点「写入文件」：首次会弹目录选择器，选 <b>C:\Users\&lt;你&gt;\.pi\agent</b>（不存在则先创建）；</li>
+                  <li>宿主 设置 → 模型配置 →「从其他工具导入」→ 扫描 → 勾选「Cline Pass（本地网关）」→ 导入；</li>
+                  <li>导入后在该 provider 的模型卡勾上「可供 AI 自动调度」；</li>
+                  <li>不愿授权写盘可用「复制」手动保存为同一路径，导入后文件可删。</li>
+                </ol>
+                <div class="hint">本插件仅向所选目录写入一个 <b>models.json</b>（不读、不删其他文件）。选择器为模态窗口，请在 30 秒内完成；超时后重选即可，目录已记住则秒写。重载后需重选。</div>
+              </details>
+            </section>
+
+            <section class="import-section" id="host-ladder-card">
+              <h4 class="import-title">宿主档位（直接改宿主那一行）</h4>
+              <div class="hint">导入后档位会回到宿主默认值（<code>off/low/medium/high</code>，默认 <code>medium</code>，选不到 <code>max</code>），可在导入后一键按目录建议对齐。</div>
+              <div class="hint"><b class="warn-text">请在导入之后点。</b> 仅改「<code>base_url</code> 指向本机网关」那一行的 <code>thinkingLevels</code> 与 <code>defaultThinkingLevel</code>，写前已备份，可「撤销」。</div>
+              <div class="row">
+                <button class="primary" id="sync-host-ladder">写入宿主档位</button>
+                <button id="undo-host-ladder">撤销</button>
+                <span class="hint" id="host-ladder-meta"></span>
+              </div>
+              <div class="hint" id="host-ladder-result"></div>
+              <div class="row">
+                <label class="hint" for="catalog-source-ladder">数值来源</label>
+                <select id="catalog-source-ladder">
+                  <option value="models.dev">models.dev（PI-Desktop 自带快照）</option>
+                  <option value="cline-pass">Cline Pass 官方目录（Cline SDK）</option>
+                </select>
+                <span class="hint" id="catalog-source-hint-ladder"></span>
+              </div>
+              <div class="hint">下面的「目录建议」按这个来源算 —— 换来源会换建议值。这个下拉与「模型与通道 → 模型参数」里的是同一个值。</div>
+              <div class="hint"><b>目录建议 vs 宿主现值</b>（只读对比；不一致就点上面的「写入宿主档位」）：</div>
+              <div id="host-ladder-diff"></div>
+              <details>
+                <summary>说明</summary>
+                <div class="hint">宿主「从其他工具导入」的 <code>models.json</code> 不含思考档位字段，因此每个模型都会落到硬编码档位。</div>
+                <div class="hint">宿主无 provider 写接口（<code>providers/list</code> 等均为读），唯一带档位的载荷仅用于云同步与 SSH 导入且拒绝 <code>127.x</code>；因此此按钮直接改宿主数据库该行。</div>
+                <div class="hint">已知代价：在设置页对该 provider 点「保存服务」会用内存旧副本覆盖；每次「重新导入」也会回到硬编码档位。</div>
+              </details>
+            </section>
+
+            <section class="import-section" id="model-settings">
+              <h4 class="import-title">模型参数（写进生成的配置）</h4>
+              <div class="hint">各模型的参数在「模型与通道 → 模型列表」的卡片里改；改完回到这里点「保存模型参数」批量提交，再回到上方重新生成配置并导入，宿主才会看到新值。</div>
+              <div class="row">
+                <label class="hint" for="catalog-source">数值来源</label>
+                <select id="catalog-source">
+                  <option value="models.dev">models.dev（PI-Desktop 自带快照）</option>
+                  <option value="cline-pass">Cline Pass 官方目录（Cline SDK）</option>
+                </select>
+                <span class="hint" id="catalog-source-hint"></span>
+              </div>
+              <div class="hint">两套均为<b>发布值</b>（非个人偏好），图片能力与显示名始终取自 models.dev。这个下拉与上方「宿主档位」里的是同一个值。</div>
+              <div class="hint"><b class="warn-text">宿主「从其他工具导入」仅认：模型层 <code>id</code>、<code>limit.context</code>、<code>limit.output</code>、<code>reasoning</code>、<code>input</code>、<code>nativeWebSearch</code>。</b></div>
+              <div class="hint">以下三项需在宿主模型卡手改：思考档位、显示名、是否可供 AI 调度。其余（上下文 / 输出 / 图片 / 有无思考）会按此值生效。</div>
+              <details>
+                <summary>说明</summary>
+                <div class="hint">选用哪套决定「官方值」对照、生成配置中的 <code>limit.*</code> 以及网关 <code>/v1/models</code> 广播的数值。例如 <code>deepseek-v4.1-flash</code> 的输出上限 models.dev 为 <b>384000</b>，Cline 目录为 <b>943718</b>；<code>deepseek-v4-pro</code> 档位分别为 <code>high/max</code> 与 <code>high/xhigh</code>。</div>
+                <div class="hint">列表显示为<b>目录 id</b>（<code>cline-pass/&lt;模型&gt;</code>），写入生成配置时会加 <code>cline-pass-local/</code> 前缀，原因见上方「生成配置」的说明。</div>
+                <div class="hint">「已改」表示该字段被本面板覆盖；「官方值」仅作对照，不会自动回写。档位控件来自 models.dev：有 <code>effort</code> 为滑杆、<code>toggle</code> 为开关、<code>none</code> 表示无思考档位。</div>
+                <div class="hint">宿主显示规则：<code>limit.context</code> / <code>limit.output</code> 会在导入后落为 <code>contextWindowSource</code> / <code>maxTokensSource</code> = <code>"user"</code>，即显示此处填写的值；若为 <code>"catalog"</code> 则显示宿主从 models.dev 查得的值，查不到为 <code>-- · --</code>。本 provider 地址 <code>127.0.0.1:41593/v1</code> 与 models.dev 中本机 provider （<code>:1337</code> / <code>:1234</code> / <code>:8081</code>）对比为协议+host:port 全等，因此永远查不到，需显式提供数值。</div>
+                <div class="hint">请勿在宿主中向此 provider 手动添加其他模型 id（如 <code>deepseek/deepseek-v4.1-flash</code>），仅会显示 <code>-- · --</code>；如需该模型的官方元数据，请加到直连 <code>api.cline.bot</code> 的 provider（models.dev 中有 <code>cline-pass</code> 对应项）。</div>
+              </details>
+              <div class="row">
+                <button class="primary" id="save-all-models">保存模型参数</button>
+                <span class="hint">逐个提交「模型与通道 → 模型列表」里改过的字段；没有改动的模型不发请求。</span>
+              </div>
+            </section>
           </div>
         </section>
 
@@ -747,10 +828,47 @@
           el.hidden = false;
         }
 
+
+        /* 数值来源：两套发布值二选一，写进插件自己的 config.json（不是宿主）。
+           同一个值有两处下拉（「模型与通道 → 模型参数」与「导入与参数 → 宿主档位」），
+           两处必须显示同一个值，改哪一处都走同一条 setConfig。 */
+        var CATALOG_SOURCE_SELECTS = [
+          ["catalog-source", "catalog-source-hint"],
+          ["catalog-source-ladder", "catalog-source-hint-ladder"]
+        ];
+        function renderCatalogSource(status) {
+          var value = status && status.catalogSource === "cline-pass" ? "cline-pass" : "models.dev";
+          var label = value === "cline-pass" ? "当前：Cline 官方目录" : "当前：models.dev";
+          CATALOG_SOURCE_SELECTS.forEach(function (pair) {
+            var sel = document.getElementById(pair[0]);
+            if (sel) sel.value = value;
+            var hint = document.getElementById(pair[1]);
+            if (hint) hint.textContent = label;
+          });
+        }
+        function setCatalogSource(value, trigger) {
+          if (!beginBusy("正在切换数值来源", trigger)) {
+            // 被别的操作占着：浏览器已经把 <select> 的原生值改了，而这次既不提交也不刷新，
+            // 两处下拉会一直显示不同的值。用当前生效值把两处一起拨回来。
+            renderCatalogSource(state.status);
+            return;
+          }
+          release(run({ action: "setConfig", catalogSource: value }, 20000, true)).then(function (result) {
+            if (result && result.ok === true) log("数值来源已切到 " + value + "：「官方值」、生成配置与宿主档位建议会跟着变；要让宿主也变，得重新生成配置再导入一次。");
+            refresh();
+          });
+        }
+        CATALOG_SOURCE_SELECTS.forEach(function (pair) {
+          var sel = document.getElementById(pair[0]);
+          // Absent only in a sliced test DOM - `panel-wiring.cjs` keeps the id in the
+          // markup, so in the real panel this is always wired.
+          if (sel) sel.onchange = function () { setCatalogSource(sel.value, sel); };
+        });
         /* ------------------------------- rendering ------------------------------ */
         function renderStatus() {
           var status = state.status;
           renderHostSync();
+          renderCatalogSource(status);
           if (!status) return;
           document.getElementById("dot").className = status.running ? "dot on" : "dot";
           document.getElementById("state").textContent = status.running
@@ -1062,7 +1180,9 @@
         function modelSettingsCard(model) {
           var entry = node("details", "model-entry");
           entry.dataset.model = model.id;
-          entry.open = model.id in state.openModels ? state.openModels[model.id] === true : model.id === state.model;
+          // Never auto-open on load: the selected model used to expand and push every
+          // other card off screen. Only an explicit toggle opens a card.
+          entry.open = state.openModels[model.id] === true;
           entry.addEventListener("toggle", function () { state.openModels[model.id] = entry.open; });
 
           var summary = node("summary");
@@ -1086,12 +1206,32 @@
 
           var stack = node("div", "model-stack");
 
+        /* Disable every control in a subtree.
+           Walks `children` rather than using a compound selector, so one piece of
+           code runs under the panel's real DOM and under the test's minimal stub. */
+        function disableControls(root) {
+          var kids = root && root.children;
+          if (!kids) return;
+          Array.prototype.forEach.call(kids, function (child) {
+            var tag = String(child.tagName || "").toLowerCase();
+            if (tag === "input" || tag === "select") child.disabled = true;
+            disableControls(child);
+          });
+        }
+
           function addField(labelText, control, editedKey) {
             var row = node("div", "model-field");
             row.appendChild(node("label", "field-label", labelText));
             var wrap = node("div", "field-control");
             wrap.appendChild(control);
             if (editedKey && (model.edited || []).indexOf(editedKey) >= 0) wrap.appendChild(pillTag("已改", "warn"));
+            // Once the host's row exists it owns this value: an edit here would
+            // change nothing, so the control is shown read-only and labelled.
+            if (editedKey && model.origin && model.origin[editedKey] === "host") {
+              wrap.appendChild(pillTag("宿主", "ok"));
+              wrap.className += " from-host";
+              disableControls(wrap);
+            }
             row.appendChild(wrap);
             return row;
           }
@@ -1101,6 +1241,19 @@
           registered.dataset.field = "registered";
           registered.checked = model.registered === true;
           stack.appendChild(addField("写进生成的配置", registered, "registered"));
+          // No validation to run for a boolean, so it saves on the spot: that is
+          // what "ticking it" means to the user, and it keeps the 已勾选 badge honest
+          // without hunting for the save button at the bottom of a long card.
+          registered.onchange = function () {
+            var wanted = registered.checked === true;
+            if (!beginBusy("正在保存 " + model.id, registered)) return;
+            release(run({ action: "setModel", model: model.id, registered: wanted }, 20000, true)).then(function (result) {
+              if (result && result.ok === true) {
+                log(model.id + "：" + (wanted ? "已勾选，会写进「生成配置」" : "已取消勾选，不会写进「生成配置」"));
+              }
+              refresh();
+            });
+          };
           var aliasInput = node("input");
           aliasInput.type = "text";
           aliasInput.dataset.field = "alias";
@@ -1113,7 +1266,7 @@
           });
           var aliasWrap = node("div");
           aliasWrap.appendChild(aliasInput);
-          var aliasHint = node("div", "hint", aliasInput.value.length + "/60 · 对应生成配置里的 name（导入后宿主落库为 alias），最长 60 字符，宿主会截断");
+          var aliasHint = node("div", "hint", aliasInput.value.length + "/60 · 会写进生成配置的 name，也会由网关的 /v1/models 广播出去。但宿主「从其他工具导入」不读这个字段（0.20.1 实测落库行里既没有 name 也没有 alias）—— 宿主里的显示名来自它探测 /v1/models 的结果，所以改完名要让宿主重新探测一次（重新加一次 provider，或重扫）；左侧「该服务的模型」列表就是这份探测结果。最长 60 字符。");
           aliasWrap.appendChild(aliasHint);
           stack.appendChild(addField("显示名（别名）", aliasWrap, "name"));
 
@@ -1185,6 +1338,12 @@
           var lvlHint = node("div", "hint", "至少勾一项，且必须包含 off（网关需要 off 才能真正关掉思考，否则为假开关）。");
           levelsWrap.appendChild(lvlHint);
           if ((model.edited || []).indexOf("thinkingLevels") >= 0) levelsWrap.appendChild(pillTag("已改", "warn"));
+          // The checkboxes are built after `addField` ran, and clearing the wrap
+          // dropped the pill it added, so both need redoing here.
+          if (model.origin && model.origin.thinkingLevels === "host") {
+            disableControls(levels);
+            levelsWrap.appendChild(pillTag("宿主", "ok"));
+          }
           stack.appendChild(levelsRow);
 
           var defaultWrap = node("div");
@@ -1194,6 +1353,11 @@
           var defHint = node("div", "hint", "候选为已勾选档位；有非 off 档位时会额外提供 omit（不发送思考字段）。");
           defaultWrap.appendChild(defHint);
           stack.appendChild(addField("默认档位", defaultWrap, "defaultThinkingLevel"));
+
+          // One line per card instead of a paragraph on every field.
+          if (model.origin && Object.keys(model.origin).some(function (key) { return model.origin[key] === "host"; })) {
+            stack.appendChild(node("div", "hint", "标「宿主」的项来自宿主那一行（设置页里那条 provider），这里只读 —— 要改请去宿主设置页改，网关几秒内会跟着变；档位也可以直接用「宿主档位」卡的按钮按目录建议对齐。"));
+          }
 
           function refreshLevelChoices() {
             var candidates = checkedLevels(levels);
@@ -1211,7 +1375,9 @@
             if (list.indexOf(previous) >= 0) defaultLevel.value = previous;
             else if (list.indexOf(model.defaultThinkingLevel) >= 0) defaultLevel.value = model.defaultThinkingLevel;
             else if (list.length > 0) defaultLevel.value = list[0];
-            defaultLevel.disabled = list.length === 0;
+            // A host-owned default level stays read-only even though the option list
+            // is non-empty: the value belongs to the host's row.
+            defaultLevel.disabled = list.length === 0 || Boolean(model.origin && model.origin.defaultThinkingLevel === "host");
           }
           Array.prototype.forEach.call(levels.querySelectorAll("input[data-level]"), function (box) {
             var prev = box.onchange;
@@ -1248,7 +1414,10 @@
 
           var actions = node("div", "row");
           var save = node("button", "primary", "保存模型参数");
-          save.onclick = function () { saveModel(this, entry, model, levels, cwChips, maxChips, aliasInput, cwInput, maxInput, defaultLevel); };
+          // The 批量保存 button in the 「模型参数」 card drives this same submit path
+          // for every card, so hand it out instead of duplicating the logic.
+          entry._save = function (trigger) { saveModel(trigger, entry, model, levels, cwChips, maxChips, aliasInput, cwInput, maxInput, defaultLevel); };
+          save.onclick = function () { entry._save(this); };
           var restore = node("button", null, "恢复官方值");
           restore.onclick = function () { restoreModel(this, model); };
           actions.appendChild(save);
@@ -1355,6 +1524,48 @@
             afterSetModel(model.id, keys, result);
           });
         }
+
+        /* 「模型参数」卡片底部的批量保存：模型卡住在「模型与通道 → 模型列表」里，
+           这里逐个触发它们各自的提交（saveModel 自己会跳过没有改动的）。
+           面板同一时刻只允许一个调用，所以等 busy 落下再点下一个。 */
+        function saveAllModelParams(button) {
+          var host = document.getElementById("model-settings-list");
+          var entries = (host ? Array.prototype.slice.call(host.querySelectorAll("details.model-entry")) : [])
+            .filter(function (entry) { return typeof entry._save === "function"; });
+          if (entries.length === 0) {
+            log("没有模型卡可保存 —— 各模型的编辑卡片在「模型与通道 → 模型列表」里。");
+            return;
+          }
+          log("批量保存：" + entries.length + " 个模型逐个提交，没有改动的会被跳过。");
+          /* Saving one card refreshes status and the panel may rebuild that card's DOM,
+             so every step looks the card up **in the current document** by its model id
+             instead of holding on to the nodes captured at the start. */
+          function liveEntry(id) {
+            if (!host) return null;
+            var all = host.querySelectorAll("details.model-entry");
+            for (var i = 0; i < all.length; i += 1) if (all[i].dataset.model === id) return all[i];
+            return null;
+          }
+          var startedAt = Date.now();
+          var index = 0;
+          (function step() {
+            if (index >= entries.length) { log("批量保存结束。"); return; }
+            // `busy` releases on the panel call's own timeout, but never poll forever:
+            // a stuck lock would otherwise spin silently with no end line.
+            if (Date.now() - startedAt > 60000) {
+              log("批量保存中止：等面板空闲超过 60 秒（已完成 " + index + " / " + entries.length + "）。");
+              return;
+            }
+            if (busy.active) { window.setTimeout(step, 200); return; }
+            var wanted = entries[index++];
+            var entry = liveEntry(wanted.dataset.model) || wanted;
+            if (typeof entry._save === "function") entry._save(button);
+            window.setTimeout(step, 200);
+          })();
+        }
+        var saveAllModelsButton = document.getElementById("save-all-models");
+        // Absent only in a sliced test DOM - `panel-wiring.cjs` keeps the id in the markup.
+        if (saveAllModelsButton) saveAllModelsButton.onclick = function () { saveAllModelParams(this); };
 
         function restoreModel(button, model) {
           var published = model.published || {};
@@ -1901,7 +2112,7 @@
           Array.prototype.forEach.call(document.querySelectorAll("#tabs button"), function (other) {
             other.setAttribute("aria-selected", String(other === button));
           });
-          ["accounts", "models", "history", "usage", "settings"].forEach(function (name) {
+            ["accounts", "models", "import", "history", "usage", "settings"].forEach(function (name) {
             document.getElementById("tab-" + name).hidden = name !== button.dataset.tab;
           });
           if (button.dataset.tab === "history") loadHistory();
@@ -2211,6 +2422,79 @@
             .catch(function () { /* keep the cached or OS palette */ });
         })();
 
+        /* -------------------- 宿主档位（绕过宿主直接改那一行） -------------------- */
+        /* 宿主的导入格式没有档位字段，所以导入后档位永远是它自己的
+           off/low/medium/high + medium，max 选不到。这个按钮直接改宿主库里那一行的
+           两个字段；写之前原值已存进插件数据目录，「撤销」就是把它放回去。 */
+        function renderHostLadder(result) {
+          var metaEl = document.getElementById("host-ladder-meta");
+          var outEl = document.getElementById("host-ladder-result");
+          if (!result || result.ok !== true) {
+            var why = result && result.error ? result.error : "调用失败";
+            if (metaEl) metaEl.textContent = "";
+            if (outEl) outEl.textContent = why;
+            log("宿主档位：" + why);
+            return;
+          }
+          var changed = Number(result.changed || 0);
+          if (metaEl) metaEl.textContent = changed === 0 ? "无需改动" : "改了 " + changed + " 个模型";
+          var lines = [];
+          (result.changes || []).forEach(function (c) {
+            lines.push(c.id + "：" + (c.from.thinkingLevels || []).join("/") + "（默认 " + String(c.from.defaultThinkingLevel) + "）→ " + c.to.thinkingLevels.join("/") + "（默认 " + c.to.defaultThinkingLevel + "）");
+          });
+          (result.models || []).forEach(function (m) {
+            lines.push(m.id + " → " + (m.thinkingLevels || []).join("/") + "（默认 " + String(m.defaultThinkingLevel) + "）");
+          });
+          (result.skipped || []).forEach(function (s) { lines.push("跳过 " + s.id + "：" + s.reason); });
+          if (outEl) outEl.textContent = (result.note ? result.note + "\n" : "") + lines.join("\n");
+          log(result.note || "宿主档位已处理。");
+          loadHostLadderDiff();
+        }
+        document.getElementById("sync-host-ladder").onclick = function () {
+          if (!beginBusy("正在写入宿主档位", this)) return;
+          release(run({ action: "syncHostLadder" }, 20000, true)).then(function (result) {
+            if (result) renderHostLadder(result);
+          });
+        };
+        document.getElementById("undo-host-ladder").onclick = function () {
+          if (!beginBusy("正在撤销宿主档位", this)) return;
+          release(run({ action: "undoHostLadder" }, 20000, true)).then(function (result) {
+            if (result) renderHostLadder(result);
+          });
+        };
+
+        /* 目录建议 vs 宿主现值：只读对比，差异就是「宿主未同步」。 */
+        function renderHostLadderDiff(result) {
+          var box = document.getElementById("host-ladder-diff");
+          if (!box) return;
+          box.textContent = "";
+          if (!result || result.ok !== true) {
+            box.appendChild(node("div", "hint", result && result.error ? result.error : "读不到对比结果。"));
+            return;
+          }
+          if (result.available === false) {
+            box.appendChild(node("div", "hint", result.note || "读不到宿主那一行。"));
+            (result.suggested || []).forEach(function (row) {
+              box.appendChild(node("div", "hint", row.id + " → 建议 " + row.suggested.join("/") + "（默认 " + String(row.suggestedDefault) + "）"));
+            });
+            return;
+          }
+          (result.rows || []).forEach(function (row) {
+            var line = node("div", row.same ? "hint" : "hint warn-text");
+            line.textContent = row.id +
+              "　宿主：" + (row.present ? (row.current.join("/") || "（无档位）") + "（默认 " + String(row.currentDefault) + "）" : "没有这一行") +
+              "　→　目录建议：" + row.suggested.join("/") + "（默认 " + String(row.suggestedDefault) + "）" +
+              (row.same ? "　✔ 一致" : "　✖ 不一致，点上面的「写入宿主档位」");
+            box.appendChild(line);
+          });
+        }
+        function loadHostLadderDiff() {
+          return run({ action: "hostLadderDiff" }, 20000, true).then(function (result) {
+            if (result) renderHostLadderDiff(result);
+            return result;
+          });
+        }
+        loadHostLadderDiff();
         refresh();
       })();
     </script>

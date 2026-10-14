@@ -233,6 +233,10 @@ const run = (payload) => { sent.push(payload); return Promise.resolve(null) }
 const release = (promise) => promise
 const beginBusy = (label) => { busyLabels.push(label); return true }
 const endBusy = () => {}
+/* The panel's busy lock is declared above the sliced block in the real page; the
+   test supplies it so the bulk-save path can read it. `beginBusy` above is a stub
+   that never flips it, which is what a synchronous test wants. */
+const busy = { active: false }
 const renderStatus = () => {}
 /* flashField schedules its own cleanup: recording the callback instead of
    running it keeps the hint on screen for the assertion. */
@@ -242,9 +246,9 @@ const win = {
   clearInterval: () => {},
 }
 
-const factory = new Function('state', 'document', 'window', 'log', 'run', 'release', 'beginBusy', 'endBusy', 'renderStatus',
-  chunk + '\nreturn { modelSettingsCard: modelSettingsCard, renderModelSettings: renderModelSettings, formValues: formValues, formProblem: formProblem, patchKeys: patchKeys, saveModel: saveModel, restoreModel: restoreModel, checkedLevels: checkedLevels, syncPresetHighlight: syncPresetHighlight, sameLevels: sameLevels, flashField: flashField, LEVELS: LEVELS, CW_PRESETS: CW_PRESETS, MAX_PRESETS: MAX_PRESETS, LIMITS: LIMITS };')
-const api = factory(state, doc, win, log, run, release, beginBusy, endBusy, renderStatus)
+const factory = new Function('state', 'document', 'window', 'log', 'run', 'release', 'beginBusy', 'endBusy', 'renderStatus', 'busy',
+  chunk + '\nreturn { modelSettingsCard: modelSettingsCard, renderModelSettings: renderModelSettings, formValues: formValues, formProblem: formProblem, patchKeys: patchKeys, saveModel: saveModel, restoreModel: restoreModel, checkedLevels: checkedLevels, syncPresetHighlight: syncPresetHighlight, sameLevels: sameLevels, flashField: flashField, LEVELS: LEVELS, CW_PRESETS: CW_PRESETS, MAX_PRESETS: MAX_PRESETS, LIMITS: LIMITS, saveAllModelParams: saveAllModelParams };')
+const api = factory(state, doc, win, log, run, release, beginBusy, endBusy, renderStatus, busy)
 
 /* ---------- assertion plumbing, and the little interactions a user performs ---------- */
 let failures = 0
@@ -449,6 +453,14 @@ const cardNodes = () => collect(listHost, (n) => n.tagName === 'details' && /(^|
 api.renderModelSettings(true)
 check(cardNodes().length === 2, 'the list builds one card per model (got ' + cardNodes().length + ')')
 const firstCard = cardNodes()[0]
+
+/* 9b. a card never auto-opens on load: the selected model used to expand and push
+       every other card off screen. Only an explicit toggle opens one. */
+check(firstCard.open === false, 'a card does not auto-open for the model selected in the dropdown')
+state.openModels = { 'claude-sonnet-4.5': true }
+const reopenedCard = api.modelSettingsCard(fixture())
+check(reopenedCard.open === true, 'a card the user opened stays open when it is rebuilt')
+state.openModels = {}
 const firstDef = fieldOf(firstCard, 'defaultThinkingLevel')
 check(firstCard.parentNode === listHost && firstDef.children.length === 5, 'the card is attached to the list and its 默认档位 dropdown is filled')
 api.renderModelSettings()
@@ -470,6 +482,104 @@ check(sent.length === mark + 1 && restorePatch.contextWindow === 200000 && resto
 check(restorePatch.thinkingLevels.join('|') === 'off|low' && restorePatch.name === undefined && restorePatch.registered === undefined
   && restorePatch.defaultThinkingLevel === undefined,
   'and only those: the alias, the registration flag and the default pick stay untouched')
+/* N. a field the host's row owns is read-only, labelled, and explained once -
+      editing it in the panel would change nothing. */
+const originHostCard = api.modelSettingsCard(fixture({
+  origin: { contextWindow: 'host', maxTokens: 'host', supportsImages: 'host', thinkingLevels: 'host', defaultThinkingLevel: 'host' },
+  host: { contextWindow: 128000, maxTokens: 8000, supportsImages: true, thinkingLevels: ['off', 'low', 'high', 'max'], defaultThinkingLevel: 'low' },
+}))
+const originHostPills = collect(originHostCard, (n) => n.textContent === '宿主')
+check(originHostPills.length === 5, 'each host-owned field is labelled 宿主 (got ' + originHostPills.length + ')')
+check(fieldOf(originHostCard, 'contextWindow').disabled === true, 'a host-owned window is read-only in the panel')
+check(fieldOf(originHostCard, 'maxTokens').disabled === true, 'a host-owned output cap is read-only')
+check(fieldOf(originHostCard, 'supportsImages').disabled === true, 'a host-owned image flag is read-only')
+check(fieldOf(originHostCard, 'defaultThinkingLevel').disabled === true, 'a host-owned default level is read-only')
+const originHostBoxes = collect(originHostCard, (n) => n.tagName === 'input' && n.dataset && n.dataset.level)
+check(originHostBoxes.length > 0 && originHostBoxes.every((box) => box.disabled === true),
+  'the level checkboxes are read-only too (they are built after addField ran)')
+check(collect(originHostCard, (n) => /标「宿主」的项/.test(n.textContent || '')).length === 1, 'the card explains the read-only fields exactly once')
+const originPlainCard = api.modelSettingsCard(fixture())
+check(fieldOf(originPlainCard, 'contextWindow').disabled === false && collect(originPlainCard, (n) => n.textContent === '宿主').length === 0,
+  'without a host row every control stays editable and nothing is labelled 宿主')
 
+
+/* 11. the 批量保存 button in the 模型参数 card drives every card's own submit:
+       edited cards go through 保存模型参数, untouched ones are skipped, and the
+       panel still sees one call at a time (the rest waits on the panel timer). */
+state.status = { models: [fixture(), fixture({ id: 'gpt-5', name: 'GPT-5' })] }
+state.model = ''
+api.renderModelSettings(true)
+const bulkCards = cardNodes()
+check(bulkCards.length === 2, 'the bulk-save fixture built two cards (got ' + bulkCards.length + ')')
+fieldOf(bulkCards[0], 'contextWindow').value = '200000'
+const bulkButton = el('button')
+const sentBefore = sent.length
+const labelsBefore = busyLabels.length
+api.saveAllModelParams(bulkButton)
+check(sent.length === sentBefore + 1 && sent[sent.length - 1].contextWindow === 200000,
+  '批量保存 submits the card that was edited')
+check(busyLabels.length === labelsBefore + 1 && /正在保存 claude-sonnet-4\.5/.test(busyLabels[busyLabels.length - 1]),
+  'it goes through that card own 保存模型参数 path (got "' + busyLabels[busyLabels.length - 1] + '")')
+check(timers.length > 0, 'the remaining cards wait on the panel timer instead of firing at once')
+while (timers.length > 0) timers.shift()()
+check(sent.length === sentBefore + 1, 'the untouched model submits nothing (got ' + (sent.length - sentBefore) + ' calls)')
+check(logs.some((line) => /没有改动/.test(line)), 'the untouched model is reported as 没有改动')
+check(logs.some((line) => /批量保存结束/.test(line)), 'the run ends with a 批量保存结束 line')
+
+/* 12. 批量保存在面板忙时的行为：不抢锁、只排队；等太久就中止并说明（不是静默卡死）。 */
+state.status = { models: [fixture()] }
+api.renderModelSettings(true)
+fieldOf(cardNodes()[0], 'contextWindow').value = '200000'
+const busyButton = el('button')
+const sentWhileBusy = sent.length
+const realNow = Date.now
+let clock = realNow()
+Date.now = () => clock
+busy.active = true
+api.saveAllModelParams(busyButton)
+check(sent.length === sentWhileBusy, 'a busy panel is not pre-empted: nothing is submitted')
+check(timers.length > 0, 'the next step waits on the panel timer instead')
+clock += 61000                       // 越过 60 秒上限
+while (timers.length > 0) timers.shift()()
+Date.now = realNow
+check(sent.length === sentWhileBusy, 'past the 60 s cap it still submits nothing')
+check(logs.some((line) => /批量保存中止/.test(line)), 'and it says 批量保存中止 instead of spinning silently')
+busy.active = false
+
+/* 13. 数值来源：被 busy 丢弃的那次点击必须把两处下拉拨回当前生效值 —— 浏览器已经把
+       <select> 的原生值改了，而这次既不提交也不刷新，不拨回去两处会永久不一致。 */
+const catStart = pageScript.indexOf('var CATALOG_SOURCE_SELECTS')
+const catEnd = pageScript.indexOf('/* ------------------------------- rendering')
+if (catStart < 0 || catEnd < 0) throw new Error('the catalog-source block was not found in the panel script')
+let allowBusy = true
+const catBusy = (label) => { busyLabels.push(label); return allowBusy }
+const catApi = new Function('document', 'state', 'log', 'beginBusy', 'release', 'run', 'refresh',
+  pageScript.slice(catStart, catEnd) + '\nreturn { setCatalogSource: setCatalogSource, renderCatalogSource: renderCatalogSource };')(
+  doc, state, log, catBusy, release, run, () => {})
+/* A fake <select> resolves `value` through its <option> children, so these need the
+   two real options to be readable back. */
+function sourceSelect(id, hintId) {
+  const s = el('select'); s.id = id
+  for (const value of ['models.dev', 'cline-pass']) {
+    const option = el('option'); option.value = value; s.children.push(option)
+  }
+  const hint = el('span'); hint.id = hintId
+  elements[id] = s
+  elements[hintId] = hint
+  return s
+}
+const selA = sourceSelect('catalog-source', 'catalog-source-hint')
+const selB = sourceSelect('catalog-source-ladder', 'catalog-source-hint-ladder')
+state.status = { catalogSource: 'models.dev' }
+catApi.renderCatalogSource(state.status)
+check(selA.value === 'models.dev' && selB.value === 'models.dev', 'both 数值来源 selects show the live value')
+selB.value = 'cline-pass'            // 用户在第二处拨到了另一套
+allowBusy = false                    // 面板正忙：这次点击会被 beginBusy 丢弃
+const sentBeforeSel = sent.length
+catApi.setCatalogSource('cline-pass', selB)
+check(sent.length === sentBeforeSel, 'a click dropped by the busy lock sends no setConfig')
+check(selA.value === 'models.dev' && selB.value === 'models.dev',
+  'and both selects go back to the live value instead of diverging for good (got ' + selA.value + ' / ' + selB.value + ')')
+allowBusy = true
 console.log('\n' + (failures === 0 ? 'ALL ' + total + ' MODEL CARD CHECKS PASSED' : failures + ' OF ' + total + ' MODEL CARD CHECK(S) FAILED'))
 process.exit(failures === 0 ? 0 : 1)

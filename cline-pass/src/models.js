@@ -136,8 +136,8 @@ function modelIds() {
 }
 
 /** The catalog plus built-in defaults, before any user override. */
-function defaultsFor(id) {
-  const entry = catalogEntry(id)
+function defaultsFor(id, source) {
+  const entry = catalogEntry(id, source)
   if (!entry) return null
   return {
     id,
@@ -192,36 +192,60 @@ function sanitizeSettings(raw) {
 }
 
 /**
- * The effective model list: catalog defaults merged with the user's overrides.
+ * The effective model list, in the order that decides every number: the host's
+ * own row first, then the panel's fallback, then the published set.
  *
- * `source` says where each value came from, so the panel can mark an edited
- * field instead of pretending it is published metadata.
+ * `hostModels` is `hostladder.readHostModels()` - the parameters of the row the
+ * user imported. Where the host has a value it wins, because that row is what the
+ * settings page edits and what the model picker shows; the panel's own numbers
+ * only cover a model the host has no row for, which is what a fresh import needs.
+ * `source` picks which published set the remaining defaults come from
+ * (`catalog.js` `CATALOG_SOURCES`), so one model can be read as models.dev or as
+ * Cline's own catalog.
+ *
+ * `published`, `edited` and `origin` say where each value came from, so the panel
+ * can mark a field the host owns instead of offering an edit that would do
+ * nothing.
  */
-function effectiveModels(settings = {}) {
+function effectiveModels(settings = {}, source, hostModels) {
   const overrides = sanitizeSettings(settings)
+  const hostOf = (id) => (hostModels instanceof Map ? hostModels.get(id) : undefined)
   return modelIds()
     .map((id) => {
-      const base = defaultsFor(id)
+      const base = defaultsFor(id, source)
       const patch = overrides[id] ?? {}
-      const thinkingLevels = sanitizeLevels(patch.thinkingLevels, base.thinkingLevels)
+      const host = hostOf(id)
+      // The host owns these numbers once its row exists: that row is what the
+      // settings page edits and what the picker shows, so a panel value must not
+      // silently disagree with it. The panel's own numbers are the fallback for a
+      // model the host has no row for - which is what a fresh import needs.
+      const hostWindow = host?.contextWindow ?? undefined
+      const hostMax = host?.maxTokens ?? undefined
+      const hostImages = typeof host?.supportsImages === 'boolean' ? host.supportsImages : undefined
+      const hostLevels = Array.isArray(host?.thinkingLevels) && host.thinkingLevels.length > 0 ? host.thinkingLevels : undefined
+      const thinkingLevels = hostLevels
+        ? sanitizeLevels(hostLevels, base.thinkingLevels)
+        : sanitizeLevels(patch.thinkingLevels, base.thinkingLevels)
       // `omit` survives even though it is not one of the ticking levels: it is
       // the host's own spelling for "no thinking field by default", which is what
       // `off` means on the wire. Its model editor offers both, so we mirror it
       // instead of silently rewriting the user's choice back to a level.
       const preferred =
-        patch.defaultThinkingLevel === 'omit'
-          ? 'omit'
-          : typeof patch.defaultThinkingLevel === 'string' && thinkingLevels.includes(patch.defaultThinkingLevel)
-            ? patch.defaultThinkingLevel
-            : thinkingLevels.includes(base.defaultThinkingLevel)
-              ? base.defaultThinkingLevel
-              : thinkingLevels[0]
+        host?.defaultThinkingLevel && (thinkingLevels.includes(host.defaultThinkingLevel) || host.defaultThinkingLevel === 'omit')
+          ? host.defaultThinkingLevel
+          : patch.defaultThinkingLevel === 'omit'
+            ? 'omit'
+            : typeof patch.defaultThinkingLevel === 'string' && thinkingLevels.includes(patch.defaultThinkingLevel)
+              ? patch.defaultThinkingLevel
+              : thinkingLevels.includes(base.defaultThinkingLevel)
+                ? base.defaultThinkingLevel
+                : thinkingLevels[0]
       return {
         id,
         name: patch.name ?? base.name,
-        contextWindow: patch.contextWindow ?? base.contextWindow,
-        maxTokens: patch.maxTokens ?? base.maxTokens,
-        supportsImages: typeof patch.supportsImages === 'boolean' ? patch.supportsImages : base.supportsImages,
+        contextWindow: hostWindow ?? patch.contextWindow ?? base.contextWindow,
+        maxTokens: hostMax ?? patch.maxTokens ?? base.maxTokens,
+        supportsImages: hostImages ?? (typeof patch.supportsImages === 'boolean' ? patch.supportsImages : base.supportsImages),
         thinkingLevels,
         defaultThinkingLevel: preferred,
         registered: typeof patch.registered === 'boolean' ? patch.registered : base.registered,
@@ -232,10 +256,22 @@ function effectiveModels(settings = {}) {
           supportsImages: base.supportsImages,
           thinkingLevels: base.thinkingLevels,
         },
-        lever: catalogEntry(id).thinking.lever,
+        lever: catalogEntry(id, source).thinking.lever,
         // True when the catalog itself had to fall back to a stand-in default.
-        fallback: catalogEntry(id).fallback === true,
+        fallback: catalogEntry(id, source).fallback === true,
         edited: Object.keys(patch),
+        // Where each effective value came from, so the panel can mark a field the
+        // host owns instead of offering an edit that would have no effect.
+        origin: {
+          contextWindow: hostWindow !== undefined ? 'host' : patch.contextWindow !== undefined ? 'panel' : 'catalog',
+          maxTokens: hostMax !== undefined ? 'host' : patch.maxTokens !== undefined ? 'panel' : 'catalog',
+          supportsImages: hostImages !== undefined ? 'host' : typeof patch.supportsImages === 'boolean' ? 'panel' : 'catalog',
+          thinkingLevels: hostLevels ? 'host' : Array.isArray(patch.thinkingLevels) ? 'panel' : 'catalog',
+          defaultThinkingLevel: host?.defaultThinkingLevel ? 'host' : typeof patch.defaultThinkingLevel === 'string' ? 'panel' : 'catalog',
+        },
+        // The host's own block, so the comparison card can show it next to the
+        // catalog's suggestion without a second read.
+        host: host ?? null,
       }
     })
 }
@@ -256,19 +292,31 @@ function effortsFor(model) {
  * means exactly "this one goes into the JSON the user imports" - it no longer
  * feeds any host-facing file.
  */
-function registeredModels(settings = {}) {
-  return effectiveModels(settings).filter((model) => model.registered)
+function registeredModels(settings = {}, source) {
+  return effectiveModels(settings, source).filter((model) => model.registered)
 }
 
 /**
  * The `%USERPROFILE%\.pi\agent\models.json` body for the ticked models.
  *
- * The shape is the host's `pi` source, field by field:
- *   - `providers.<id>` with `name`, `baseUrl`, `api`, `apiKey` and at least one
+ * The shape is the host's `pi` source, field by field. Its reader
+ * (`parsePiModelConfig` -> `bindingFromPiModel`) takes exactly:
+ *   - provider: `name`, `baseUrl`, `api`, `apiKey`, `headers`, and at least one
  *     model - a provider without a model is dropped by the parser;
- *   - a model needs `id` (that is the only spelling the reader accepts), plus
- *     `limit.context` / `limit.output` for the window and the output cap,
- *     `reasoning` for "offer thinking levels", and `input` for image support.
+ *   - model: `id` (the only spelling that reader accepts), `limit.context` /
+ *     `limit.output` (or `contextWindow` / `maxTokens`), `contextWindowSource` /
+ *     `maxTokensSource`, `reasoning` for "offer thinking levels", `input` for
+ *     image support, and `nativeWebSearch`.
+ * Everything else is silently ignored - notably a model's `name`, and the whole
+ * `thinkingLevels` / `defaultThinkingLevel` / `thinkingProtocol` /
+ * `availableForSubagents` group, which only the host's own sync payload accepts.
+ * `name` is still emitted because it costs nothing and a host that reads it would
+ * then have the label; on 0.20.1 the label reaches the host through the gateway's
+ * `/v1/models` instead (`src/catalog.js`).
+ * `reasoning: true` is the whole ladder lever: the host answers it with its own
+ * `off/low/medium/high` plus a `medium` default, so the `max` level this catalog
+ * knows cannot survive the import - which is why the panel says so in as many
+ * words instead of promising it.
  * Explicit `limit` values are kept as the user's own numbers, so the host's
  * models.dev backfill does not overwrite them.
  *
@@ -278,7 +326,7 @@ function registeredModels(settings = {}) {
  * @param settings - the per-model overrides from `config.json`.
  * @returns the config object, ready for `JSON.stringify(payload, null, 2)`.
  */
-function importConfigPayload(settings = {}) {
+function importConfigPayload(settings = {}, source) {
   return {
     providers: {
       [IMPORT_PROVIDER_ID]: {
@@ -286,7 +334,7 @@ function importConfigPayload(settings = {}) {
         baseUrl: GATEWAY_BASE_URL,
         api: IMPORT_PROVIDER_API,
         apiKey: hostPlaceholderKey(),
-        models: registeredModels(settings).map((model) => ({
+        models: registeredModels(settings, source).map((model) => ({
           id: importModelId(model.id),
           name: model.name,
           limit: { context: model.contextWindow, output: model.maxTokens },

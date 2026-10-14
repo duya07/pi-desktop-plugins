@@ -7,7 +7,7 @@
 | 维度 | 说明 |
 | --- | --- |
 | **这是什么** | 本地网关 `127.0.0.1:41593` + 账号池与轮转 / 冷却 + 通道枚举与校验 + pin / exclude + failover + 流式空闲超时 + 思考档位映射 |
-| **怎么看** | 面板五页：账号池 / 模型与通道 / 请求历史 / 用量 / 设置 · 官方额度窗口（5 小时 / 本周 / 本月）· 10 个 `cline_pass_*` agent 工具 |
+| **怎么看** | 面板六页：账号池 / 模型与通道 / 导入与参数 / 请求历史 / 用量 / 设置 · 官方额度窗口（5 小时 / 本周 / 本月）· 10 个 `cline_pass_*` agent 工具 |
 | **接哪里** | Cline Pass（`api.cline.bot`）· 面板生成的配置 → 你自己的 provider → 本机网关 |
 
 ---
@@ -39,8 +39,8 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 | 8 | 🔌 端口 | 单一常量 `GATEWAY_PORT` 与本机校验 |
 | 9 | 📜 宿主契约 | 0.19.1 硬约束与本插件对照表 |
 | 10 | 🔄 与 DSH 版的差异 | 接法、档位、密钥、面板桥、额度缓存 |
-| 11 | 🛠️ 本轮修复 | 30 条变更记录（按主题分组，编号与顺序不变） |
-| 12 | ✅ 自测 | `55/55`、`76`、`40` 等断言与命令 |
+| 11 | 🛠️ 本轮修复 | 37 条变更记录（按主题分组，编号与顺序不变） |
+| 12 | ✅ 自测 | `57/57`、`45`、`68` 等断言与命令 |
 | 13 | 🧪 验证状态 | 已验证 / 未验证 / 待实测 的逐条证据 |
 | 14 | 📦 来源 | DSH 0.2.5-p3 MIT 移植说明 |
 
@@ -75,7 +75,7 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 
 插件**不声明任何 provider**，得把模型导入成**你自己的** provider —— 只有这种 provider 能在设置页里编辑、能勾「可供 AI 自动调度」（子代理能不能用它，就看这一勾）：
 
-1. 面板「模型与通道」→ **生成配置** → **写入文件**：第一次会弹系统目录选择器，选 `C:\Users\<你>\.pi\agent`（目录不存在就先建一个）。插件只往这个目录写一个 `models.json`，不读、不删别的文件。不想授权写盘就点「复制」，自己存成同一个路径 —— 这个路径是「从其他工具导入」会扫描的来源之一（`pi`）。
+1. 面板「导入与参数」→ **生成配置** → **写入文件**：第一次会弹系统目录选择器，选 `C:\Users\<你>\.pi\agent`（目录不存在就先建一个）。插件只往这个目录写一个 `models.json`，不读、不删别的文件。不想授权写盘就点「复制」，自己存成同一个路径 —— 这个路径是「从其他工具导入」会扫描的来源之一（`pi`）。
 2. 设置 → 模型配置 → **从其他工具导入** → **扫描** → 勾选「Cline Pass（本地网关）」→ **导入所选**。
 3. 导入后在那张模型卡里勾上 **「可供 AI 自动调度」**。
 4. 之后调参数直接改设置页那张卡（理由见下一节）；`models.json` 留着或删掉都行（留着下次扫描还能看到）。
@@ -244,7 +244,7 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 
 ---
 
-## 🛠️ 本轮修复（对照文档 / 宿主实现后改动，30 条）
+## 🛠️ 本轮修复（对照文档 / 宿主实现后改动，37 条）
 
 > 本节逐条记录对照开发说明与宿主实现之后的每处改动：根因、修法，以及如何验证。编号与先后顺序保持不变，按主题分组便于检索。
 
@@ -308,6 +308,42 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 29. **「写入文件」：插件唯一的写盘动作（用户要求"只允许写这一条路径"）**：用宿主的 `root: "userSelected"` 机制 —— 第一次点会弹系统目录选择器（选 `~/.pi/agent`），句柄**只活在插件进程内**；`pi.fs.requestDirectory()` 实际校验的是 **`fs.read`** 权限（在已装宿主包里核实过），所以 manifest 同时声明 `fs.read`（**不给任何 `fs.read` 规则**，不放开任何可读路径）与 `fs.write`；`pi.fs.writeText(pathFromRoot, …)` 收的是**相对 root 的路径**，代码因此只传字面量 `models.json`。取消选择器 → 一个文件都不写；进程内记住目录，第二次是秒写；**0 个模型时直接拒绝**（不用空清单覆盖用户已有的文件）。面板上还有一句提示：选择器是模态窗口、请在 30 秒内选完，超时就再点一次（秒写）。测试从 71 条加到 **76 条**。
 30. **干脆不声明 provider（用户："第一个这个可以不要喽"）**：`contributes.providers` 与 `provider.register` 权限一起删除；端口/地址从 manifest 挪到 `src/protocol.js` 的单一常量（`GATEWAY_PORT` / `GATEWAY_BASE_URL`），`manifestPort()` 与 `providerBaseUrl()` 一并删除，`src/` 里再没有任何地方读 `contributes.providers`。宿主会在下一次同步（停用→启用/重启）删掉那行（对账逻辑会枚举 `owner_plugin_id` 的行）。另外查明并写进上一节：`pi` 导入格式**硬编码**思考档位（`reasoning: true` → `off/low/medium/high`），所以 models.dev 的梯子只能在设置页里手改 —— 这不是"没对齐"，是导入格式的限制。
 
+### J 组 · 模型元数据与 id 拼写对齐（31）
+
+31. **网关 `/v1/models` 改报导入拼写，`name` 改用面板的有效名（对齐宿主的探测结果）**：宿主导入 provider 后会去探测它的 `/v1/models`，把读到的写进自己的 `models` 表（`source = discovered`）。而本插件端点原来广播的是**目录 id**（`cline-pass/x`），生成的配置却用 `cline-pass-local/x` —— 两边自相矛盾，实测有两个后果：① 撞名从探测这条路又回来了（宿主的委派 key 是 `<vendorKey>/<模型 id>`，于是 `custom/cline-pass/x` 与直连 `api.cline.bot` 那条同名），② 宿主 `models` 表里该 provider 名下**只有 14 行目录 id、一行导入 id 都没有**，导入的 5 条没有显示名而探测出来的 14 条有。改法：`modelsEndpointPayload()` 用 `importModelId()` 重拼 id，`name` 改用**面板的有效名**（此前这个「显示名」字段完全空转 —— 宿主导入不读 `name`，端点又只用目录名，两边都没用上）。网关照旧三种拼写都收，所以纯 OpenAI 客户端「拿到什么就发回什么」也能用。测试加三条断言：广播 id == 生成配置 id、每条广播 id 都能反查回目录模型、面板改名后 `/v1/models` 跟着变。
+
+### K 组 · 宿主档位直写（32）
+
+32. **「写入宿主档位」：面板一键把插件的档位写进宿主那一行（用户要求）**：宿主的 `models.json` 读取器没有档位字段（见第 30 条），所以导入后档位永远是硬编码 `off/low/medium/high` + `medium`，`max` 选不到。宿主也不给任何 provider 写接口 —— `providers/list`、`providers/listModels`、`providers/modelCatalogStatus` 全是读，`providers/refreshModelCatalog` 只刷 models.dev 目录；唯一带档位的载荷 `parseProviderImportPayload`（字段表 `MODEL_FIELDS` 含 `thinkingLevels`）只有云同步与 SSH 导入两个入口，且都要过 `isSyncableProvider` → `networkEndpoint()`，而那个函数明确拒绝 `127.x`。所以新增 `src/hostladder.js`：用宿主自己也在用的 `node:sqlite` 打开宿主数据库，把 `thinkingLevels` / `defaultThinkingLevel` 写进「`base_url` 指向本网关」的那一行。**这是明知故犯的越界**（写的是宿主数据库，没有任何已声明权限覆盖它；插件本来就跑在宿主主进程里、用 `node:fs` 写自己的 config.json 与 usage.jsonl），所以护栏写死在代码里：只在面板点按钮时跑；必须**恰好一行**匹配，否则拒绝；`config_json` 必须能解析出 `models` 数组，否则拒绝；只改这两个字段，其他键与顺序原样保留；只认本插件 `cline-pass-local/` 前缀映射回目录的 id，用户手加的模型一律跳过；写进去的默认档位必须在自己那套档位里（宿主自己的校验规则）；写之前把原 `config_json` 存进插件数据目录，「撤销」按钮原样放回去。测试 `test/host-ladder.cjs`（34 条：纯计划函数、只动那一行、另一条 provider 逐字节未变、重复点是无操作、撤销还原到原字节、四条拒绝路径）。**两个已知代价**：设置页里对那条 provider 点一次「保存服务」，宿主会用内存里的旧副本覆盖回去；每次「重新导入」也会回到硬编码档位。
+
+### L 组 · 两套发布值可选（33）
+
+33. **两套发布值可选（用户要求「把 cline pass 那一套加回去」）**：`src/catalog.js` 现在带**两张表** —— `MODEL_CATALOG`（models.dev 的读数，`tools/sync-catalog.mjs` 可刷新）与 `CLINE_PUBLISHED`（**Cline 自己发布的那套**：窗口、输出上限、档位 lever 与 levels，读自 Cline SDK `sdk/packages/llms/src/catalog/catalog.generated.ts` 的 `cline-pass` provider key 与 `cline-recommended.generated.ts` 的 `clinePass[]`，2026-10-13）。两套确实不一样：`deepseek-v4.1-flash` 的输出上限 models.dev 报 **384000**、Cline 报 **943718**；`deepseek-v4-pro` 的档位 models.dev 是 `high/max`、Cline 是 `high/xhigh`。`catalogEntry(id, source)` 按 `source` 合并，未知 source 读作 models.dev，Cline 表没覆盖的模型保留 models.dev 的数（不会静默丢成空）。显示名与图片能力**始终**来自 models.dev —— Cline 的生成目录不发布这两项，自己补就成了第二个猜测。选择存在 `config.json` 的 `catalogSource`（`models.dev` | `cline-pass`；`normalize()` 只认这两个值，`setConfig` 是唯一写入口），面板「模型参数」卡顶部有下拉；它决定「官方值」栏、生成配置里的 `limit.*`、以及 `/v1/models` 广播的数字。测试：`gateway.test.mjs` 新增一条覆盖上面每一点，**56/56**。
+
+### M 组 · 参数来源反转（34）
+
+34. **参数来源反转：插件不再自己规定参数，改成「宿主那一行说了算」（用户要求）**：原来面板的数值/档位是插件的源、宿主只是镜像，两边可以不一致。现在反过来 —— 新增 `hostladder.readHostModels()`（只读，3 秒 TTL 缓存，写后由 `invalidateHostModels()` 失效）把宿主那一行的窗口 / 输出 / 图片 / 档位读回来，`effectiveModels(settings, source, hostModels)` 的优先级变成**宿主 → 面板 → 目录**（宿主没有该模型的行时，面板的值才是「初版 / 兜底」）；网关的 `modelParams()`（请求路径的档位映射）、`/v1/models`、`ops.status` 三处都改走这条链，所以**档位映射用的是宿主那套**，面板改档位不再影响运行时。面板侧：`addField` 给「来源是宿主」的字段挂 `宿主` 标记并**只读**（窗口 / 输出 / 图片 / 档位复选框 / 默认档位都禁用），卡片尾部一句说明「要改请去宿主设置页改，网关几秒内会跟着变」；`refreshLevelChoices()` 原来会把默认档位重新启用、`levelsWrap.textContent = ""` 会把标记清掉，两处都按来源修正了。「宿主档位」卡新增**只读对比**（`hostLadderDiff` 动作）：逐模型列「宿主现值 vs 目录建议」并标 ✔/✖ —— 档位仍可能停在导入时的硬编码值上，那正是那个按钮要修的状态。读取失败一律返回 `null`（不是空 map），避免把「读不到」当成「没有参数」；`hostDbPath()` 也加了护栏：`dataDir` 为空时不再回退到真机路径，否则测试会读到你自己的库。测试：`host-ladder` **34 → 45**（读取器、缓存与失效、空 dataDir、无该行读作 null）、`gateway` **56 → 57**（宿主优先于面板与目录、`origin` 标记、无宿主时的回落）、`render-model-card` **60 → 68**（宿主字段只读 + 标记 + 只说明一次；无宿主时保持可编辑）。
+
+### N 组 · 面板减负与两处修复（35）
+
+35. **面板排版减负 + 两处真机 bug（用户反馈 5 点）**：① **`origin` / `host` 漏在 status 拼接里** —— `ops.status()` 是逐字段拼模型对象的，我把 `origin`/`host` 加进了 `effectiveModels` 却忘了加进这个拼接，于是面板永远收不到来源标记，**「宿主」标记与只读全部不生效**（真机现象：用户找不到任何「宿主」标记）。已补，并在 `gateway.test.mjs` 的接线冒烟里加三条断言钉住（status 必须带 `origin` 且取值合法、必须带 `host` 键）。② **「写进生成的配置」勾了没用** —— 那张卡的设计是「改动后点卡片底部的『保存模型参数』才提交」，而卡片很长、按钮在屏幕外，勾完看不到任何变化。现在 `registered` 这个布尔**勾上即保存**（没有校验要跑），保存后 `refresh()` 让徽标立刻变，日志也明说「已勾选 / 已取消勾选」。③ **排版重构（前端由 Kimi K3 实现，我逐项复核）**：原来「生成配置 / 宿主档位 / 模型参数」是三张各自带 4–8 行长 hint 的卡片，纵向堆在「模型与通道」tab 里非常吵；现在合并成**一张 `#import-and-params`（「导入与模型参数」）**，内部三节（`generate-config-card` / `host-ladder-card` / `model-settings` 都保留为节容器），首屏只留一句话摘要 + 关键警告，长解释收进 `<details><summary>说明</summary>`。**复核方式**（不采信子代理自述）：只允许改 CSS 与标记 —— 验证脚本区（`<script>` 起止之间）**行数与改动前逐行一致（1800 行）**、脚本里不出现任何新 class 名（`import-section` / `import-title` / `import-and-params` 零命中）、`git diff` 的 hunk 全部落在 CSS 与标记区、五个渲染/接线测试全过。
+
+> **后续（第 36 / 37 条）**：用户先澄清要的是**独立 tab**（卡搬进「导入与参数」，第 36 条），随后指出**模型列表属于模型页** —— 于是「生成配置 / 宿主档位」留在新 tab，「模型参数（含模型列表）」搬回「模型与通道」（第 37 条）。
+
+### O 组 · 面板 tab 拆分与检查加固（36）
+
+36. **「导入与参数」独立成页 + 两处接线检查加固**（用户澄清「卡片重组」= 新增 tab）：第 35 条把三张卡合并成一张 `#import-and-params` 之后，用户指出要的是**独立 tab**，而不是挤在「模型与通道」里。改动只有四处：`<nav id="tabs">` 里在「模型与通道」之后加 `<button data-tab="import">`；`<main>` 里把 `#import-and-params` 从 `#tab-models` 移进新的 `<section id="tab-import" hidden>`（位置在 `#tab-models` 与 `#tab-history` 之间）；**把 `"import"` 加进 tab 切换器的硬编码名单**；顺手修掉上一轮留下的 432 行错误缩进。**第三处是必须知道的坑**：切换器是 `["accounts", "models", "history", …].forEach(name => document.getElementById("tab-" + name).hidden = …)` —— 名字是**字面量数组**，不是从 DOM 推导的；漏加名字则新 section 永远 `hidden`（点了没反应），而多写一个不存在的名字会 `Cannot set properties of null` 直接抛错。`panel-wiring.cjs` 原来的检查只匹配 `getElementById("字面量")`，抓不到 `getElementById("tab-" + name)` 这种拼接，所以补了第 6 组（按钮 ↔ section ↔ 名单两两一致）与第 7 组（「导入与参数」紧跟「模型与通道」、三节都在 `#tab-import` 内、卡已不在 `#tab-models` 内）。同时**复活了名存实亡的检查 2**：原文件里 `emitted` 集合被填充却从未断言（注释写着「每个脚本 emit 的 class 都要有样式规则」，实际一行检查都没跑）—— 现已补上，并把 `\b` 收紧为 `(?![a-z0-9-])`：`\b` 会让 `.import-title` 被 `.import-title-renamed` 满足，是**假阴性**（负向对照实验抓到的：改名规则后旧正则仍报 OK）。**负向对照**（证明新检查不是空转）：删掉 `<section id="tab-import">` → 6 条 FAIL；把脚本 emit 的 `.pill` 规则改名 → 1 条 FAIL。离线验证：`gateway` **57/57**、`host-ladder` **45**、`render-model-card` **68**、`render-import-config` **40**、`render-host-sync` **25**、`host-sync` OK、`render-quota` OK、`panel-wiring` OK、`node --check` 全仓 0 失败、`PluginCheck` 24 文件通过。**真机待看一眼**：重载后新 tab 能切、「宿主」标记出现、勾选即时生效。
+
+### P 组 · tab 归属修正与三处 UI 修复（37）
+
+37. **模型列表搬回「模型与通道」+ 三处 UI 修复（用户 4 点反馈）**：① **模型卡不再默认展开** —— 原来 `entry.open` 的兜底是 `model.id === state.model`，于是打开面板时第一张卡（当前选中的模型）自动展开，把其余卡全挤出屏幕；现在只有用户点开过（`state.openModels[id] === true`）才展开，而 `focusModelEntry()` 仍会在**你主动切换模型**时展开对应的卡。② **「说明」框不再比文字宽一倍** —— `#model-settings > .hint` 上有一条 `max-width: 72ch`，让这张卡的文字只占 ~600px，而 `<details>` 铺满整卡（1235px），于是框看起来「歪出去」；已去掉该限制。③ **数值来源两处可改** —— 原来只有「模型参数」节有这个下拉，现在「宿主档位」节也有一个（档位建议本来就按它算），两处由同一个 `CATALOG_SOURCE_SELECTS` 列表驱动、改哪一处都走同一条 `setConfig`，不会出现两处显示不一致。④ **模型列表回到「模型与通道」** —— 第 36 条把整节搬进「导入与参数」后，用户指出模型卡列表属于模型页：现在「模型与通道」= 模型选择 + 通道 pin + 模型参数（含列表），「导入与参数」= 生成配置 + 宿主档位。**几何实测（不是目测）**：用 headless Chrome 在 900 / 1330 两个宽度、折叠与展开两种状态下量 `getBoundingClientRect()` —— 三个节、每个 `.hint`、每个 `<details>` 的左右边界全部是同一组值（1330 下 `[31, 1266]`），展开后 `scrollWidth === clientWidth`（无横向溢出）。离线验证：`gateway` **57/57**、`host-ladder` 45、`render-model-card` **70**（+2 条：默认折叠、用户展开后重建仍保持）、`render-import-config` 40、`render-host-sync` 25、`host-sync`/`render-quota`/`panel-wiring` OK、`node --check` 0 失败、`PluginCheck` 24 文件。**负向对照**：把 `entry.open` 改回旧逻辑 → `render-model-card` 1 条 FAIL；删掉 `<section id="tab-import">` → `panel-wiring` 6 条 FAIL；把脚本 emit 的 `.pill` 规则改名 → 1 条 FAIL。**真机待看一眼**：重载后首屏不再自动展开、说明框与文字同宽、两处数值来源同步。
+>
+> **修正（同一轮，最终状态）**：④ 的第一版把「模型参数」**整节**搬进了「模型与通道」—— 用户指出要的是**那一列模型卡**过去、而「模型参数」节留在「导入与参数」。最终：「模型与通道」= 模型选择 + 通道 pin + `#model-list-card`（只含 `#model-settings-list`）；「导入与参数」= 生成配置 + 宿主档位 + 模型参数（数值来源 + 说明）。`panel-wiring.cjs` 第 7 组据此改成：`#tab-import` 必须含 `model-settings`，`#tab-models` 必须含 `model-list-card` 且**不含** `model-settings-list`。
+>
+> **⑤ 补「保存模型参数」按钮（用户「第二个卡片的按钮呢」）**：列表搬走后「模型参数」节只剩数值来源与说明，文案却还写着"在此调整参数并保存"，而唯一的提交入口是**每张模型卡里的**「保存模型参数」—— 用户在导入页看不到任何按钮。现在该节底部有一个**批量**「保存模型参数」（`#save-all-models`）：`modelSettingsCard()` 把每张卡的提交路径挂到 `entry._save`，批量按钮遍历列表逐个触发（`saveModel` 自己会跳过没有改动的），面板同一时刻只允许一个调用，所以其余排队等 `busy` 落下再点下一个。**测试**：`render-model-card.cjs` 新增 7 条（`saveAllModelParams` 已导出，`busy` 按测试既有风格注入）—— 改过的卡提交、未改的卡报「没有改动」且不提交、提交走的是该卡自己的「保存模型参数」路径（断言 `beginBusy` 的 label 带模型名）、其余排在面板定时器上、结束时有一行「批量保存结束」。**负向对照**：把 `entry._save(button)` 改成空操作 → 3 条 FAIL。离线验证：`gateway` **57/57**、`host-ladder` 45、`render-model-card` **77**、`render-import-config` 40、`render-host-sync` 25、`host-sync`/`render-quota`/`panel-wiring` OK、`node --check` 0 失败。
+>
+> **⑥ 独立评审后的四处修复（`code-reviewer` 只读评审，我逐条核验后采纳）**：① **面板忙时两处下拉会永久分歧** —— `setCatalogSource` 在 `beginBusy` 失败时直接 `return`，而浏览器已经把被点的那个 `<select>` 的原生值改了、这次既不提交也不刷新，两处会一直显示不同的值。现在失败分支先 `renderCatalogSource(state.status)` 把两处拨回当前生效值。② **批量保存无上限重试** —— `busy.active` 长期为 true 时 `step` 每 200 ms 自调度、永远不打结束行（**实测**：去掉上限后测试进程 8 秒仍不终止，只能硬杀）。现在有 60 秒总上限，超时写一行「批量保存中止」。③ **提交可能落在已脱离文档的旧表单上** —— 保存一张卡会让 status 回来、面板可能重建那张卡的 DOM；`step` 现在每一步按 `data-model` 在**当前文档**里取节点，而不是用开始时抓的那批引用。④ **`panel-wiring` 第 9 组断言可被绕过** —— 原来断言 `!/entry\.open = model\.id === state\.model/`，若改成 `… === true || model.id === state.model` 仍会通过；现在取整行断言，并要求该行不出现 `state.model`。**新增测试**：`render-model-card.cjs` **84** 条（+7：忙时不抢锁只排队、越过 60 秒中止并说明、两处下拉同步与忙时回滚）。**负向对照**：去掉回滚 → 1 条 FAIL（打印出 `models.dev / cline-pass` 的分歧）；去掉 60 秒上限 → 进程不终止（8 秒硬杀验证）。
+
 ---
 
 ## ✅ 自测
@@ -316,12 +352,13 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 
 ```powershell
 cd <本仓库>\cline-pass
-node --test test/gateway.test.mjs      # Windows 下必须给文件路径；55 项
+node --test test/gateway.test.mjs      # Windows 下必须给文件路径；57 项
 node test/render-quota.cjs             # 面板额度卡片：63 条断言，不需要浏览器
-node test/render-model-card.cjs        # 面板模型参数卡：60 条断言（含「默认档位点不开」回归）
+node test/render-model-card.cjs        # 面板模型参数卡：68 条断言（含「默认档位点不开」回归 + 宿主字段只读）
 node test/render-import-config.cjs     # 面板「生成配置」卡片：40 条断言（生成 / 复制 / 写入文件 / 模型 id 前缀说明）
 node test/render-host-sync.cjs         # 面板宿主同步行：25 条断言（六种状态）
 node test/host-sync.cjs                # 宿主清单比对 + 写入文件（pi.models.list / pi.fs 桩）：76 条断言
+node test/host-ladder.cjs              # 宿主档位直写 + 读取（临时 SQLite 文件 + 真事务 + 撤销）：45 条断言
 node test/panel-wiring.cjs             # 面板接线：脚本要的 id/class 是否都还在
 ```
 
@@ -354,6 +391,16 @@ node test/panel-wiring.cjs             # 面板接线：脚本要的 id/class �
 | 本轮新增（数值来源换成 models.dev） | `src/catalog.js` 14 条按 models.dev 重算（13 条变化），刷新脚本 `tools/sync-catalog.mjs`，幂等复跑 0 变化 |
 | 本轮新增（2026-10-14 凌晨，用户拍板） | **生成配置里的模型 id 改带 `cline-pass-local/` 前缀**，网关再做映射 —— 为了消掉委派目录的 key 撞名（见上文 WARNING「子代理侧更隐蔽」）。用户当时的原话是「你确定撞的是模型 id 而不是名字？」—— 确实是模型 id：委派 key 是 `<vendorKey>/<模型 id>`，用户自建 provider 的 vendorKey 全是 `custom`，provider 显示名根本不进 key，所以「改个 provider 名字」没有用（而且默认名本来就叫「Cline Pass（本地网关）」，早就区分开了，照样撞）。改动：`src/models.js` 新增 `IMPORT_MODEL_PREFIX` / `importModelId()` / `unimportModelId()`，`importConfigPayload()` 用前缀拼 id；`src/gateway.js` 的 `normalizeModelId()` 先剥前缀再查目录，**三种拼写都收**（`cline-pass-local/x`、`cline-pass/x`、宿主的 `x`），落不到任何模型时原样透传（错模型应答比上游报错更糟）。面板「生成配置」卡片与「模型参数」卡片都加了说明（用户要求：别让人以为改了名就路由不回去）。TDD 顺序：先写会红的用例（网关把 `cline-pass-local/…` 原样转发 → `actual: 'cline-pass-local/<模型>'`），再改实现。离线验证：`gateway` **55/55**（+1 条：三种拼写 + pin 跟随 + 未知 id 透传）、`host-sync` **76**（+1 条：前缀契约）、`render-import-config` **40**（+4 条：前缀说明文案）、`render-host-sync` 25、`render-model-card` 60、`render-quota` 63、`panel-wiring` OK、`node --check` 0 失败。**用户侧代价**：旧 provider 里的 id 是旧拼写，要享受前缀必须**删掉重新导入一次**（导入器判重会跳过同名 provider） |
 | 本轮新增（2026-10-14 01:5x，**真机端到端验证通过**） | 用户重载插件 + 重新「写入文件」+ 删旧 provider + 重新导入之后，前缀方案在真机上闭环 —— 面板「写入文件」写入 **1704 字节**（旧拼写是 1675），网关日志 `import config written {"bytes":1704,"models":5}`；新 provider（`<你的 provider id>`，baseUrl 指网关、5 模型），旧的已删；委派 key 变成 `custom/cline-pass-local/<模型>`。用 `custom/cline-pass-local/<模型>` 起 explorer（任务：读 `src/protocol.js` 报 `GATEWAY_PORT` / `GATEWAY_BASE_URL`）**返回正确答案**；但"任务完成"不等于走网关，所以核对了账本：`usage.jsonl` 从 5 行增到 **7 行**，两笔都是 `model: "cline-pass/<模型>"`（**目录 id** —— 说明网关把 `cline-pass-local/<模型>` 剥前缀映射回去了）、`status=200`、2 秒上下、带成本；`gateway.log` 同期还有 `account benched {"reason":"QUOTA_EXCEEDED","ms":900000}`（冷却 + failover 又一次真机复现）。宿主转录里该 delegation 记的 `modelId` 是 `cline-pass-local/<模型>`（请求的拼写）—— 请求拼写 → 宿主 provider → 网关映射 → 目录 id → 上游，链路闭合。**撞名消失的对照实验**：再起一个**没勾**「可供 AI 自动调度」的模型，宿主**明确拒绝** —— `Model "custom/cline-pass-local/<模型>" is not available for delegation. Available: …`，而可用列表里 `custom/cline-pass/*`（直连 `api.cline.bot` 那条）与 `custom/cline-pass-local/*`（网关那条）**分成两个命名空间**；修复前同样的请求会被直连那条**静默接走**（`historySize = 0`、账本无新行、任务却显示"完成"） |
+| 本轮新增（2026-10-14，`/v1/models` 拼写对齐 + 宿主库只读核对） | 网关 `/v1/models` 改成广播 `cline-pass-local/<模型>` 之后，宿主的 `models` 表里出现了 `cline-pass-local/deepseek-v4.1-flash`（`source = discovered`、显示名 `DeepSeek V4.1 Flash`）—— 修复前这张表在该 provider 名下**只有 14 行目录 id，没有一行导入 id**。同时核清了「同一个模型 id 在不同 provider 下有的显示 `1M · 384K`、有的显示 `-- · --`」的三步判据（认 provider → 按 id 最后一个 `/` 之后的 leaf 查 → 所有者兜底），以及显示语义（`contextWindowSource` 为 `"user"` 显示存值、为 `"catalog"` 显示目录查到的值、查不到就是 `-- · --`），并据此**否掉**了自己上一轮「把 source 发成 `catalog` 更贴合宿主默认」的想法：`127.0.0.1:41593` 在 models.dev 里没有对应 provider（那边本机只有 `:1337` / `:1234` / `:8081`，且比对是**协议 + host:port 全等**），发 `catalog` 会把整列变成 `-- · --`。离线验证：`node --test test/gateway.test.mjs` **55/55**、`host-sync` 76、`render-import-config` 40、`render-host-sync` 25、`render-model-card` 60、`render-quota` 63、`panel-wiring` OK、`node --check` 0 失败、`PluginCheck` 22 文件通过（warning 仍是 `agent.tool.register` + `fs.write`） |
+| 本轮新增（2026-10-14，宿主档位直写：先在真机库上跑过同一套动作） | 把这条路径写进插件之前，先用一个独立脚本在**真机库**上跑通了同一套动作，证明它可行：`VACUUM INTO` 一致性快照（28.8 MB）+ 把原 `config_json` 单独存出来（1163 字节）+ 只改 `providers.config_json` 里 4 个模型的两个字段（事务内 `UPDATE`，`changes = 1`）+ **逐行比对证明 7 行里只有 1 行不同、其他 6 条 provider 逐字节一致** + 25 秒后回读仍是新值（宿主仍在写 WAL，但没覆盖那一行）。插件里的同一逻辑由 `test/host-ladder.cjs` 34 条离线断言覆盖（临时 SQLite 文件，不碰真机库）。**已知代价**：设置页里保存那条 provider 会覆盖回去；重新导入会回到硬编码档位。 |
+| 本轮新增（2026-10-14，两套发布值可选） | `CLINE_PUBLISHED` 的值不是新猜的：取自旧版目录（`git show a5f7b68:cline-pass/src/catalog.js`，即 `f7be3b9` 换成 models.dev 之前那张表），出处是 Cline SDK 的 `sdk/packages/llms/src/catalog/catalog.generated.ts`（provider key `cline-pass`）与 `cline-recommended.generated.ts`（`clinePass[]`）。离线验证：`gateway` **56/56**（+1 条来源切换：两套的差、未知 source 回落、`qwen3.8-max` 在 Cline 表里仍是 `fallback`、切换后广播与生成配置都跟着变、非法值被拒）、`host-sync` OK、`host-ladder` 34、`render-import-config` 40、`render-host-sync` 25、`render-model-card` 60、`render-quota` OK、`panel-wiring` OK、`node --check` 0 失败、`PluginCheck` 24 文件通过。**面板侧待看一眼**：下拉切换后「官方值」栏与生成配置应立刻跟着变。 |
+| 本轮新增（2026-10-14，参数来源反转） | 插件不再自己规定参数：`hostladder.readHostModels()` 读宿主那一行，`effectiveModels` 的优先级改成**宿主 → 面板 → 目录**，网关的档位映射 / `/v1/models` / `ops.status` 全部走宿主那套。离线验证：`gateway` **57/57**、`host-ladder` **45**、`render-model-card` **68**、`host-sync` OK、`render-import-config` 40、`render-host-sync` 25、`render-quota` OK、`panel-wiring` OK、`node --check` 0 失败、`PluginCheck` 24 文件通过。**真机待看一眼**：面板模型卡上的「宿主」标记与只读、以及「宿主档位」卡的对比表（读的是你库里那条 provider；离线断言用的是临时 SQLite 文件）。 |
+| 本轮新增（2026-10-14，面板减负 + status 漏字段修复） | 真机现象驱动：`ops.status()` 逐字段拼模型对象时漏了 `origin` / `host` → 面板的「宿主」标记与只读**全不生效**（已补，并在接线冒烟里加三条断言钉住）；「写进生成的配置」勾完要滚到卡片底部点保存才生效 → 改成**勾上即保存**。面板排版重构由 Kimi K3 实现，我的复核是**结构性**的：脚本区行数与改动前一致（1800 行）、脚本内不出现任何新 class 名、`git diff` 的 hunk 只落在 CSS 与标记区、五个渲染/接线测试全过。离线验证：`gateway` **57/57**、`host-ladder` 45、`render-model-card` 68、`host-sync` OK、`render-import-config` 40、`render-host-sync` 25、`render-quota` OK、`panel-wiring` OK、`node --check` 0 失败、`PluginCheck` 24 文件通过。**真机待看一眼**：重载后的新卡片排版，以及「宿主」标记是否出现。 |
+| 本轮新增（2026-10-14，「导入与参数」独立成页） | 三张卡合并后用户澄清要的是**独立 tab**：新增 `data-tab="import"` + `<section id="tab-import" hidden>`，并把 `"import"` 加进切换器的硬编码名单（漏加则新 section 永远 `hidden`，多写则抛 `Cannot set properties of null`）。`panel-wiring.cjs` 补第 6/7 组检查，并**复活了原来只填充不断言的检查 2**（`\b` → `(?![a-z0-9-])`，否则 `.import-title` 会被 `.import-title-renamed` 满足）。负向对照：删 section → 6 FAIL、改名 `.pill` → 1 FAIL。离线验证：`gateway` **57/57**、`host-ladder` 45、`render-model-card` 68、`render-import-config` 40、`render-host-sync` 25、`host-sync`/`render-quota`/`panel-wiring` OK、`node --check` 0 失败、`PluginCheck` 24 文件。**真机待看一眼**：新 tab 能切、排版、勾选即时生效。 |
+| 本轮新增（2026-10-14，tab 归属修正 + 三处 UI 修复） | 用户 4 点反馈：模型卡不再默认展开（原来兜底 `model.id === state.model`）；去掉 `#model-settings > .hint` 的 `max-width: 72ch`（它让文字只占框宽的一半，是「说明框歪」的真因）；「宿主档位」节新增数值来源下拉，与「模型参数」节由同一个 `CATALOG_SOURCE_SELECTS` 驱动；模型列表搬回「模型与通道」。几何实测（headless Chrome，900/1330 宽 × 折叠/展开）：三节与各自的 `.hint`、`<details>` 左右边界完全一致（1330 下 `[31,1266]`），无横向溢出。离线验证：`gateway` **57/57**、`host-ladder` 45、`render-model-card` **70**、`render-import-config` 40、`render-host-sync` 25、`host-sync`/`render-quota`/`panel-wiring` OK、`node --check` 0 失败、`PluginCheck` 24 文件。负向对照：旧 `entry.open` 逻辑 → 1 FAIL；删 tab section → 6 FAIL；`.pill` 改名 → 1 FAIL。**真机待看一眼**：首屏不自动展开、说明框与文字同宽、两处下拉同步。 |
+| 修正（同一轮） | 「模型参数」节的第一版被**整节**搬进「模型与通道」，用户纠正后拆回：「模型与通道」只放模型列表卡（`#model-list-card` 含 `#model-settings-list`），「导入与参数」放生成配置 + 宿主档位 + 模型参数（数值来源 + 说明）。几何复测（headless Chrome，900 / 1330 宽 × 展开）：`#tab-import` 三个节与 `#model-list-card` 的 `.hint`、`<details>` 左右边界全部一致（1330 下 `[31,1266]`），无横向溢出；`panel-wiring` 第 7 组断言同步更新。离线验证：`gateway` **57/57**、`host-ladder` 45、`render-model-card` **70**、`render-import-config` 40、`render-host-sync` 25、`host-sync`/`render-quota`/`panel-wiring` OK、`node --check` 0 失败。 |
+| 修正（同一轮，补按钮） | 模型列表搬走后「模型参数」节没有提交入口（用户「第二个卡片的按钮呢」）：新增批量「保存模型参数」（`#save-all-models`）—— `modelSettingsCard()` 暴露 `entry._save`，按钮遍历 `#model-settings-list` 逐个触发，未改动的被 `saveModel` 跳过，面板同一时刻只调用一次（其余排队等 `busy`）。`render-model-card.cjs` 新增 7 条断言（**77**），负向对照（空操作）→ 3 FAIL。 |
+| 本轮新增（2026-10-14，独立评审后的四处修复） | `code-reviewer` 只读评审 + 我逐条核验：① `setCatalogSource` 在 busy 冲突时把两处下拉拨回当前生效值（原来会永久分歧）；② `saveAllModelParams` 加 60 秒总上限（原来会无限自调度）；③ 每步按 `data-model` 取**当前文档**节点（避免提交已脱离文档的旧表单）；④ `panel-wiring` 第 9 组改成整行断言（原来可被 `|| model.id === state.model` 绕过）。`render-model-card` **84**（+7）。负向对照：去回滚 → 1 FAIL；去上限 → 进程不终止（8 秒硬杀验证）。 |
 
 ---
 

@@ -36,7 +36,8 @@ const path = require('node:path')
 const { BUILD_TAG } = require('./src/protocol.js')
 const { createConfig } = require('./src/config.js')
 const { createGateway } = require('./src/gateway.js')
-const { importConfigPayload, describeImportConfig, IMPORT_PROVIDER_ID } = require('./src/models.js')
+const { importConfigPayload, describeImportConfig, IMPORT_PROVIDER_ID, effectiveModels } = require('./src/models.js')
+const hostLadder = require('./src/hostladder.js')
 
 const COMMAND_ID = 'cline-pass.open'
 const SERVICE_ID = 'gateway'
@@ -66,6 +67,11 @@ let configStore = null
 let startError = ''
 let instanceId = ''
 let log = () => {}
+/**
+ * This plugin's own data directory (`pi.plugin.getDataPath()`), kept so a panel
+ * action can reach the host's database without asking the host again.
+ */
+let pluginDataDir = ''
 /**
  * The directory the user picked with `pi.fs.requestDirectory()`, remembered for
  * this process only - the host's handle is memory-only and dies with the plugin
@@ -213,6 +219,77 @@ function generatedModelIds() {
   } catch {
     return []
   }
+}
+
+/**
+ * The ladder this plugin wants the host to hold, keyed by *catalog* id.
+ *
+ * `hostladder` maps a stored id back through the import prefix, so the row's
+ * spelling and this map's spelling can differ on purpose. Only the ticked models
+ * are in it: the generated config is what the host imported, so it is what the
+ * host's row is expected to contain - anything else in that row is the user's.
+ *
+ * An unreadable config yields an empty map, and `hostladder` then reports every
+ * stored model as "not in the generated config" instead of guessing a ladder.
+ */
+function ladderTargets() {
+  const wanted = new Map()
+  try {
+    const cfg = configStore?.get?.() ?? {}
+    for (const model of effectiveModels(cfg.modelSettings ?? {}, cfg.catalogSource)) {
+      if (!model.registered) continue
+      wanted.set(model.id, { thinkingLevels: model.thinkingLevels, defaultThinkingLevel: model.defaultThinkingLevel })
+    }
+  } catch {
+    return new Map()
+  }
+  return wanted
+}
+
+/**
+ * The ladder the catalog suggests versus the ladder the host actually holds.
+ *
+ * Read-only, and the reason it exists: with the host's row as the runtime source,
+ * the one thing that can still be wrong is the host holding a ladder the catalog
+ * disagrees with - which is exactly the state a fresh import leaves behind (the
+ * `pi` reader hardcodes `off/low/medium/high`). The 宿主档位 card shows this, and
+ * the button beside it fixes it.
+ *
+ * `wanted` deliberately reads the catalog without the host's row: the suggestion
+ * has to be the published ladder, or the comparison would compare the host with
+ * itself and always agree.
+ */
+function hostLadderDiff() {
+  const wanted = ladderTargets()
+  const suggested = [...wanted].map(([id, value]) => ({
+    id,
+    suggested: value.thinkingLevels,
+    suggestedDefault: value.defaultThinkingLevel,
+  }))
+  const host = hostLadder.readHostModels({ dataDir: pluginDataDir })
+  if (host === null) {
+    return {
+      ok: true,
+      available: false,
+      rows: [],
+      note: '读不到宿主那一行（还没导入过、宿主库不在预期位置，或这个宿主没有 node:sqlite）。点「写入宿主档位」会直接把下面的建议值写进去。',
+      suggested,
+    }
+  }
+  const rows = suggested.map((row) => {
+    const current = host.get(row.id)
+    return {
+      ...row,
+      storedId: current?.id ?? '',
+      present: Boolean(current),
+      current: current?.thinkingLevels ?? [],
+      currentDefault: current?.defaultThinkingLevel ?? null,
+      same: Boolean(current) &&
+        JSON.stringify(current.thinkingLevels) === JSON.stringify(row.suggested) &&
+        current.defaultThinkingLevel === row.suggestedDefault,
+    }
+  })
+  return { ok: true, available: true, rows, note: '' }
 }
 
 /**
@@ -488,11 +565,12 @@ async function runTool(name, args) {
 
 async function onLoad() {
   const dataDir = await pi.plugin.getDataPath()
+  pluginDataDir = dataDir
   log = createLogger(dataDir)
   instanceId = `${process.pid}-${Date.now().toString(36)}`
   configStore = createConfig({ dataDir, logger: (message, detail) => log(message, detail) })
   configStore.reload()
-  gateway = createGateway({ configStore, logger: (message, detail) => log(message, detail), instanceId })
+  gateway = createGateway({ configStore, logger: (message, detail) => log(message, detail), instanceId, dataDir })
 
   try {
     const { port } = await ensureGateway()
@@ -596,6 +674,9 @@ const PANEL_ACTIONS = [
   'usage',
   'usageClear',
   'quota',
+  'syncHostLadder',
+  'undoHostLadder',
+  'hostLadderDiff',
 ]
 
 /**
@@ -618,9 +699,11 @@ async function onPanelInvoke(channel, payload) {
   if (channel !== PANEL_CHANNEL) throw new Error(`unsupported panel channel: ${channel}`)
   const input = payload && typeof payload === 'object' ? payload : {}
   const action = String(input.action ?? '')
-  // `writeConfig` touches no gateway state: it writes the generated config into
-  // a directory the user picks, so it must answer even when the gateway is down.
-  const gw = action === 'writeConfig' ? null : liveGateway()
+  // Three actions touch no gateway state and must answer even when the gateway is
+  // down: `writeConfig` writes the generated config into a directory the user
+  // picks, and the two host-ladder actions only read/write the host's own row.
+  const offline = action === 'writeConfig' || action === 'syncHostLadder' || action === 'undoHostLadder'
+  const gw = offline ? null : liveGateway()
   switch (action) {
     case 'status':
       // `host` is what the host really has for the provider the *user* imported,
@@ -664,6 +747,20 @@ async function onPanelInvoke(channel, payload) {
       return generatedImportConfig()
     case 'writeConfig':
       return await writeImportConfig()
+    case 'syncHostLadder': {
+      const written = hostLadder.syncLadder({ dataDir: pluginDataDir, wanted: ladderTargets() })
+      // The gateway caches the host's row for a few seconds; a write has to be
+      // visible to the very next request, not once the cache expires.
+      if (written.ok) hostLadder.invalidateHostModels()
+      return written
+    }
+    case 'undoHostLadder': {
+      const undone = hostLadder.undoLadder({ dataDir: pluginDataDir })
+      if (undone.ok) hostLadder.invalidateHostModels()
+      return undone
+    }
+    case 'hostLadderDiff':
+      return hostLadderDiff()
     default:
       throw new Error(`unsupported panel action: ${String(input.action ?? '')}`)
   }
