@@ -29,6 +29,16 @@
  * 传输重构（0.4.0）：
  *   - `push_desktop_file_to_remote` / `pull_remote_file_to_desktop` 通过 HTTP(S) 直传字节，
  *     字节不经 LLM 上下文，避免长 base64 失真；桌面主动发起，适配“远端不能连桌面”的网络约束。
+ * 传输重构（0.5.0）：
+ *   - push/pull 新增 `mode` 参数（可选）：给定 `host` 时默认走 **SSH（sftp 批处理）**，
+ *     给定 `remoteUrl` 时走 HTTP；显式 `mode:"http"` 保留 0.4.0 通道。
+ *   - SSH 通道零用户操作：直接复用桌面既有 `~/.ssh/config` 与密钥（sftp 自动读取），
+ *     不再要求用户先手工建 `ssh -L` 隧道或改远端 nginx；也不起任何远端服务。
+ *   - 参数注入面：host 白名单 + 禁 `-` 开头（位置参数，避免被解析成 ssh 选项）；
+ *     远端路径只拒绝控制字符（不经过远端 shell，sftp 批处理不做 shell 展开）。
+ *   - sftp 会对 `put` 的本地源路径与 `get` 的远端源路径做 glob 展开，而双引号参数
+ *     无法表达字面 `*` `?` `[`，因此这两条路径命中 glob 元字符即拒绝（见 rejectGlobMeta）。
+ *   - 超时先 SIGTERM 再 SIGKILL，最迟 15s 收敛；stdout/stderr 各截断 4 KiB 回传。
  */
 const fsp = require("node:fs/promises");
 const fs = require("node:fs");
@@ -37,7 +47,7 @@ const crypto = require("node:crypto");
 const http = require("node:http");
 const https = require("node:https");
 const os = require("node:os");
-
+const { spawn } = require("node:child_process");
 const MAX_CHUNK = 1024 * 1024; // 单次读取上限 1 MiB
 const DEFAULT_CHUNK = 256 * 1024;
 const MAX_WRITE = 4 * 1024 * 1024; // 单次写入上限 4 MiB
@@ -47,7 +57,25 @@ const MIN_TIMEOUT_MS = 5 * 1000;
 const MAX_TIMEOUT_MS = 120 * 1000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
-// ---------------------------------------------------------------------------
+
+// SSH（sftp）通道参数
+const SSH_TIMEOUT_DEFAULT_MS = 300 * 1000; // 默认 5 分钟（大文件可能超过 HTTP 的 60s）
+const SSH_TIMEOUT_MAX_MS = 30 * 60 * 1000; // 上限 30 分钟
+const SSH_CONNECT_TIMEOUT_S = 10; // 仅 TCP 建连；整次传输由下面的整体超时约束
+const SSH_STRICT_HOST_KEY_CHECKING = "accept-new"; // 首次 TOFU，已记录的 key 变化仍拒绝；绝不设 no
+const SFTP_IO_CAP = 4 * 1024; // sftp stdout/stderr 回传截断上限（错误可诊断，又不无限膨胀）
+const MAX_REMOTE_PATH_LEN = 4096;
+const MAX_HOST_LEN = 253;
+const KILL_GRACE_MS = 5000; // SIGTERM 后等待退出的宽限
+const KILL_HARD_CEILING_MS = 15000; // 宽限后仍不退出则强制收敛，绝不让 Promise 悬挂
+const KILL_DRAIN_MS = 1000; // 子进程 exit 后最多再等 1s 收完 stdout/stderr 尾巴（见 runSftpTransfer）
+// sftp 会对“put 的本地源路径”和“get 的远端源路径”做 glob 展开（源码核对见 DESIGN-0.5.0.md §3.9），
+// 而批处理的双引号参数无法表达字面 * ? [ —— 命中即拒绝（fail closed），避免静默传错文件。
+// **反斜杠必须不在拦截集内**：Windows 的绝对路径必然含 `\`（如 `C:\Users\me\f.txt`），拦它会让 push
+// 在 Windows 上 100% 失败。`\` 是转义字符而非 glob 元字符：quoteBatchArg 把每个 `\` 写成 `\\`，
+// 下游 makeargv / glob / undo_glob_escape 都恰好反转义一层，往返精确（见 §3.9 与 ssh-0.5.0.test.js）。
+// 这里刻意用字符数组而不是正则字符类——正则写法 `[*?\[]` 里的 `\[` 极易被误读成“类里含反斜杠”。
+const SFTP_GLOB_META = ["*", "?", "["];
 // 删除工具的保护清单：这些路径"删了就出事"，无条件拒绝，且没有参数可以绕过。
 // ---------------------------------------------------------------------------
 
@@ -172,15 +200,242 @@ function isValidSha256(s) {
   return typeof s === "string" && /^[0-9a-f]{64}$/.test(s.trim().toLowerCase());
 }
 
-/** 解析 timeoutMs，返回数值或错误。 */
-function parseTimeoutMs(v) {
-  if (v === undefined || v === null) return DEFAULT_TIMEOUT_MS;
+/** 解析 timeoutMs，返回数值或错误。bounds: { def, min, max }（HTTP 与 SSH 两套上限）。 */
+function parseTimeoutMs(v, bounds) {
+  if (v === undefined || v === null) return bounds.def;
   const n = Number(v);
   if (!Number.isInteger(n)) return { error: "timeoutMs must be an integer" };
-  if (n < MIN_TIMEOUT_MS || n > MAX_TIMEOUT_MS) {
-    return { error: "timeoutMs must be between " + MIN_TIMEOUT_MS + " and " + MAX_TIMEOUT_MS };
+  if (n < bounds.min || n > bounds.max) {
+    return { error: "timeoutMs must be between " + bounds.min + " and " + bounds.max };
   }
   return n;
+}
+
+const HTTP_TIMEOUT_BOUNDS = { def: DEFAULT_TIMEOUT_MS, min: MIN_TIMEOUT_MS, max: MAX_TIMEOUT_MS };
+const SSH_TIMEOUT_BOUNDS = { def: SSH_TIMEOUT_DEFAULT_MS, min: MIN_TIMEOUT_MS, max: SSH_TIMEOUT_MAX_MS };
+
+// ---------------------------------------------------------------------------
+// SSH（sftp）通道：校验与传输
+// ---------------------------------------------------------------------------
+
+/**
+ * 传输模式决议（0.5.0）：
+ *   - 显式 `mode: "ssh" | "http"` 直接生效（其余值报错）；
+ *   - 未给 mode 时：给了 `host` → ssh；给了 `remoteUrl` → http；两者都给了 → 歧义报错；
+ *   - 两者都没给 → 报错并提示用法。
+ * 这样 0.4.0 的旧调用（只带 remoteUrl）继续走 HTTP 不被破坏，新调用（只带 host）零配置走 SSH。
+ */
+function resolveTransferMode(args) {
+  const raw = args?.mode === undefined || args?.mode === null ? null : String(args.mode).toLowerCase();
+  if (raw !== null) {
+    if (raw !== "ssh" && raw !== "http") return { error: "mode must be 'ssh' or 'http'" };
+    return { mode: raw };
+  }
+  const hasHost = args?.host !== undefined && args?.host !== null && String(args.host).trim() !== "";
+  const hasUrl = args?.remoteUrl !== undefined && args?.remoteUrl !== null && String(args.remoteUrl).trim() !== "";
+  if (hasHost && hasUrl) {
+    return { error: "ambiguous transport: both host and remoteUrl were given; pass mode:'ssh' or mode:'http' explicitly" };
+  }
+  if (hasHost) return { mode: "ssh" };
+  if (hasUrl) return { mode: "http" };
+  return {
+    error:
+      "no transport target: pass host + remotePath for the SSH channel (recommended, zero setup) or mode:'http' with remoteUrl for the 0.4.0 HTTP channel",
+  };
+}
+
+/**
+ * 校验远端主机标识。接受：
+ *   - ssh-config 别名（推荐：复用桌面既有配置，无需任何新配置）；
+ *   - `user@host` 形式；
+ *   - 可选 IPv6 字面量（`[::1]` 或 `user@[::1]`）。
+ * 白名单字符集 + 禁止 `-` 开头：host 是 spawn 的位置参数，若以 `-` 开头会被 ssh/sftp
+ * 解析成选项（如 `-oProxyCommand=...`），因此必须拒绝——这是参数注入的入口，靠白名单堵死。
+ */
+function validateSshHost(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return { error: "host is required for the ssh channel (ssh-config alias or user@host)" };
+  if (s.length > MAX_HOST_LEN) return { error: "host too long (>253)" };
+  if (s.startsWith("-")) return { error: "host must not start with '-' (would be parsed as an ssh option)" };
+  const ok =
+    /^[A-Za-z0-9._-]+(?:@(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:]+\]))?$/.test(s) ||
+    /^\[[0-9A-Fa-f:]+\]$/.test(s);
+  if (!ok) {
+    return { error: "host must be an ssh-config alias or user@host (allowed: letters, digits, '.', '_', '-', '@'; IPv6 literals in brackets)" };
+  }
+  return { host: s };
+}
+
+/** 校验远端绝对路径：仅保证 sftp 批处理格式的完整性，不做目录前缀限制（理由见 DESIGN-0.5.0.md）。 */
+function validateRemotePath(raw) {
+  const s = String(raw ?? "");
+  if (!s) return { error: "remotePath is required for the ssh channel" };
+  if (s.length > MAX_REMOTE_PATH_LEN) return { error: "remotePath too long (>4096)" };
+  if (!s.startsWith("/")) return { error: "remotePath must be an absolute path starting with '/'" };
+  if (/[\x00-\x1f\x7f]/.test(s)) {
+    return { error: "remotePath must not contain control characters (newline/NUL/tab/…) — they would corrupt the sftp batch file" };
+  }
+  return { remotePath: s };
+}
+
+/**
+ * sftp 会对两条“源路径”做 glob 展开（已在 OpenSSH master 源码核对）：
+ *   - `put` 的本地源：process_put 里 `glob(src, GLOB_NOCHECK | GLOB_MARK, NULL, &g)`（sftp.c:774）；
+ *   - `get` 的远端源：process_get 里 `sftp_glob(conn, abs_src, GLOB_MARK, NULL, &g)`（sftp.c:672，无 NOCHECK）。
+ * 而批处理的双引号参数**无法**表达字面 `*` `?` `[`：parse_args/makeargv 只对 `\?`/`\[`/`\*`
+ * 追加“双重转义”（sftp.c:1286-1299），在双引号里写 `\*` 最终会得到字面反斜杠 + 字面星号。
+ * 后果是静默传错文件（存在模式匹配项时）或令人困惑的 `stat …: No such file or directory`。
+ * 因此对这两条路径直接拒绝（fail closed）。
+ * 目标侧不受影响：`put`/`get` 的第二个参数走 undo_glob_escape，只反转义、不展开。
+ * **反斜杠不拦**（`SFTP_GLOB_META` 里没有 `\`）：Windows 绝对路径必然含 `\`，拦它等于 push 全废；
+ * 且 `\` 由 quoteBatchArg 正确转义（见该常量处的注释）。
+ */
+function rejectGlobMeta(s, label) {
+  const hit = SFTP_GLOB_META.find((c) => s.includes(c));
+  if (hit) {
+    return {
+      error:
+        label +
+        " contains sftp glob metacharacters (* ? [) — found " + JSON.stringify(hit) + "; such source paths are rejected conservatively (older or non-OpenSSH sftp clients glob-expand them and could silently target a different file). Rename it or copy it to a path without those characters.",
+    };
+  }
+  return null;
+}
+
+/** 校验本地路径参数（桌面侧）：仅拒绝控制字符（批处理格式完整性）；路径语义由 path.resolve + lstat 处理。 */
+function validateLocalPathArg(raw) {
+  const s = String(raw ?? "");
+  if (!s) return "path is required";
+  if (/[\x00-\x1f\x7f]/.test(s)) {
+    return "path must not contain control characters (newline/NUL/tab/…)";
+  }
+  return null;
+}
+
+function validateSshPort(raw) {
+  if (raw === undefined || raw === null) return { port: null };
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return { error: "port must be an integer between 1 and 65535" };
+  return { port: n };
+}
+
+/**
+ * sftp 批处理行的引号转义：`"` 包住参数，`\` 与 `"` 用反斜杠转义。
+ * 控制字符已在入口校验拒绝，所以这一行永远是单行、可被 sftp 正确解析。
+ * sftp 的批处理解析器只做分词与引号/反斜杠处理，不做 shell 展开——`$`、反引号、`;`
+ * 在引号内都是字面字符，不会被远端 shell 执行（远端本来也没有 shell 参与，见 DESIGN）。
+ */
+function quoteBatchArg(s) {
+  return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
+/**
+ * 跑一次 sftp 批处理传输（put 或 get）。
+ * 安全设计：
+ *   - spawn 不用 shell，argv 数组传递，所有 `-o` 值都是本文件内的常量；
+ *     用户输入只出现在位置参数（host，已白名单校验）与批处理文件内容（已引号转义）里；
+ *   - `BatchMode=yes`：禁止任何交互（密码/指纹确认），认证失败立刻非零退出，绝不卡住；
+ *   - `StrictHostKeyChecking=accept-new`：首次连接 TOFU 记录指纹，之后指纹变化仍拒绝
+ *     （MITM 防线保留），绝不设 `no`；
+ *   - `ConnectTimeout=10` 只约束 TCP 建连；整次传输由整体计时器约束，
+ *     超时先 SIGTERM，5s 不退出再 SIGKILL（Windows 上 child.kill() 即 TerminateProcess），
+ *     最迟 15s 强制收敛，不留悬挂的 Promise，也不留僵尸 ssh 进程
+ *     （未启用 ControlMaster/ControlPersist，无后台常驻进程）；
+ *   - stderr/stdout 各截断 4 KiB 回传，保证错误可诊断。
+ * 返回 { ok, exitCode, signal, stdout, stderr, timedOut, killed, spawnError }。
+ */
+async function runSftpTransfer({ batchLine, host, port, timeoutMs }) {
+  const batchFile = path.join(
+    os.tmpdir(),
+    ".dfr-sftp-" + crypto.randomBytes(6).toString("hex") + ".batch"
+  );
+  try {
+    await fsp.writeFile(batchFile, batchLine + "\n", { mode: 0o600 });
+  } catch (e) {
+    // 临时目录不可写（EACCES/ENOSPC/只读盘…）：返回结构化错误，不让异常穿透成未捕获拒绝
+    return { ok: false, batchFileError: e.code || e.message || String(e) };
+  }
+
+  const args = [
+    "-b",
+    batchFile,
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=" + SSH_STRICT_HOST_KEY_CHECKING,
+    "-o",
+    "ConnectTimeout=" + SSH_CONNECT_TIMEOUT_S,
+  ];
+  if (port) args.push("-P", String(port));
+  args.push(host);
+
+  try {
+    return await new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let killed = false;
+      let notExited = false;
+      let settled = false;
+      let timer = null;
+      let graceTimer = null;
+      let hardTimer = null;
+      let exitInfo = null;
+      let drainTimer = null;
+
+      const capAppend = (acc, chunk) => {
+        const next = acc + chunk.toString("utf8");
+        return next.length > SFTP_IO_CAP ? next.slice(0, SFTP_IO_CAP) : next;
+      };
+
+      const child = spawn("sftp", args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+
+      const settle = (payload) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(graceTimer);
+        clearTimeout(hardTimer);
+        clearTimeout(drainTimer);
+        resolve(Object.assign({ ok: true, timedOut, killed, notExited, stdout, stderr }, payload));
+      };
+
+      child.stdout.on("data", (c) => (stdout = capAppend(stdout, c)));
+      child.stderr.on("data", (c) => (stderr = capAppend(stderr, c)));
+
+      child.on("error", (e) => settle({ ok: false, spawnError: e }));
+      // 收尾必须等 stdio 排空：Node 的 'exit' 可能在 stdout/stderr 关闭前触发，
+      // 直接 settle 会丢掉 stderr 的最后一段（恰好是认证失败原因所在）。'close' 才是流关闭后的事件；
+      // 若 'close' 迟迟不来（例如 ProxyCommand 留下持有 fd 的子进程），exit 后最多再等 1s 强制收敛。
+      child.on("exit", (code, signal) => {
+        exitInfo = { exitCode: code, signal: signal || null };
+        drainTimer = setTimeout(() => settle(exitInfo), KILL_DRAIN_MS);
+      });
+      child.on("close", (code, signal) => {
+        settle(exitInfo || { exitCode: code, signal: signal || null });
+      });
+
+      timer = setTimeout(() => {
+        timedOut = true;
+        killed = true;
+        child.kill(); // POSIX: SIGTERM；Windows: TerminateProcess（不经 shell，直接终止）
+        graceTimer = setTimeout(() => {
+          child.kill("SIGKILL"); // Windows 上无效果，无害
+        }, KILL_GRACE_MS);
+        hardTimer = setTimeout(() => {
+          if (!settled) {
+            notExited = true;
+            settle({ exitCode: null, signal: null });
+          }
+        }, KILL_HARD_CEILING_MS);
+      }, timeoutMs);
+    });
+  } finally {
+    // 批处理文件用完即删（含敏感路径时不留痕迹）
+    try {
+      await fsp.unlink(batchFile);
+    } catch {}
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -515,14 +770,156 @@ async function deleteDesktopFile(args) {
 }
 
 // ---------------------------------------------------------------------------
-// 新增：HTTP 直传（字节不经 LLM）
+// 直传入口：push / pull（0.5.0 起 mode 可显式选择 ssh|http，缺省按参数推断）
 // ---------------------------------------------------------------------------
 
+/** SSH push 的公共前置校验（本地源文件 + 参数），返回 null 或错误对象。 */
+async function sshPushGuard(args) {
+  const localErr = validateLocalPathArg(args?.path);
+  if (localErr) return { ok: false, error: localErr };
+
+  const hostRes = validateSshHost(args?.host);
+  if (hostRes.error) return { ok: false, error: hostRes.error };
+  const portRes = validateSshPort(args?.port);
+  if (portRes.error) return { ok: false, error: portRes.error };
+  const rpRes = validateRemotePath(args?.remotePath);
+  if (rpRes.error) return { ok: false, error: rpRes.error };
+
+  const timeoutRaw = parseTimeoutMs(args?.timeoutMs, SSH_TIMEOUT_BOUNDS);
+  if (timeoutRaw && typeof timeoutRaw === "object" && timeoutRaw.error) {
+    return { ok: false, error: timeoutRaw.error };
+  }
+
+  // expectedRemoteSha256 在 push 上无法兑现（不回读远端文件）。静默忽略会让调用方
+  // 误以为拿到了校验，因此显式拒绝而不是无声放过。
+  const expRemote = args?.expectedRemoteSha256;
+  if (expRemote !== undefined && expRemote !== null && String(expRemote).trim() !== "") {
+    return {
+      ok: false,
+      error:
+        "expectedRemoteSha256 is not supported on the ssh channel for push (the remote file is never read back, so it cannot be verified); drop it or use mode:'http'",
+    };
+  }
+  return { host: hostRes.host, port: portRes.port, remotePath: rpRes.remotePath, timeoutMs: timeoutRaw };
+}
+
 /**
- * 将桌面文件通过 HTTP(S) 直传到远端 URL。
+ * SSH push：sftp `put`，字节由 sftp 经 SSH 隧道流式传输，不经 LLM、不进 Node 内存。
+ * 远端路径不做目录前缀限制：SSH 账号本身可写的路径就是边界（root 即整盘）；
+ * 目录限制只会挡住合法工作流而不提供任何真实保护（理由见 DESIGN-0.5.0.md）。
+ * 注意：put 覆盖已存在的远端文件（与 scp/sftp 惯例一致）。
+ */
+async function pushViaSsh(args) {
+  const g = await sshPushGuard(args);
+  if (g.error !== undefined) return g;
+
+  const abs = path.resolve(String(args?.path ?? ""));
+  const globErr = rejectGlobMeta(abs, "local source path");
+  if (globErr) return { ok: false, error: globErr.error };
+  let st;
+  try {
+    st = await fsp.lstat(abs);
+  } catch (e) {
+    if (e.code === "ENOENT") return { ok: false, error: "file not found: " + abs };
+    return { ok: false, error: "lstat failed: " + (e.code || e.message) };
+  }
+  if (st.isSymbolicLink()) return { ok: false, error: "path is a symbolic link; refusing (this tool never follows links)" };
+  if (st.isDirectory()) return { ok: false, error: "path is a directory; refusing" };
+  if (!st.isFile()) return { ok: false, error: "path is not a regular file" };
+
+  let stat2;
+  try {
+    stat2 = await fsp.stat(abs);
+  } catch (e) {
+    return { ok: false, error: "stat failed: " + (e.code || e.message) };
+  }
+  // SSH 通道不设 50 MiB 上限（那是 HTTP/nginx 的限制）；大文件靠流式 + 超时兜底
+
+  const expectedSha = args?.expectedSha256 ? String(args.expectedSha256).trim().toLowerCase() : null;
+  if (expectedSha && !isValidSha256(expectedSha)) {
+    return { ok: false, error: "expectedSha256 must be 64 hex characters" };
+  }
+  let fileSha = null;
+  try {
+    fileSha = await sha256OfFile(abs);
+  } catch (e) {
+    return { ok: false, error: "sha256 failed: " + (e.code || e.message) };
+  }
+  if (expectedSha && expectedSha !== fileSha) {
+    return { ok: false, error: "expectedSha256 mismatch: the file changed after you read it", expected: expectedSha, actual: fileSha };
+  }
+
+  const batchLine = "put " + quoteBatchArg(abs) + " " + quoteBatchArg(g.remotePath);
+  const res = await runSftpTransfer({ batchLine, host: g.host, port: g.port, timeoutMs: g.timeoutMs });
+  const err = sftpErrorOf(res, "push", g.timeoutMs);
+  if (err) return err;
+
+  return {
+    ok: true,
+    path: abs,
+    host: g.host,
+    remotePath: g.remotePath,
+    transport: "ssh",
+    bytesSent: stat2.size,
+    sha256: fileSha,
+  };
+}
+
+/** 把 runSftpTransfer 的结果翻译成工具错误对象；成功返回 null。stderr 截断回传，不吞。 */
+function sftpErrorOf(res, verb, timeoutMs) {
+  if (res.batchFileError) {
+    return {
+      ok: false,
+      error: "could not write the sftp batch file into the temp directory: " + res.batchFileError,
+      sftpStderr: res.stderr || "",
+    };
+  }
+  if (res.spawnError) {
+    return {
+      ok: false,
+      error: "sftp executable not found on PATH or failed to start (OpenSSH client is required): " + (res.spawnError.code || res.spawnError.message || String(res.spawnError)),
+      sftpStderr: res.stderr || "",
+    };
+  }
+  if (res.timedOut) {
+    return {
+      ok: false,
+      error: "sftp " + verb + " timed out after " + timeoutMs + "ms (process killed)",
+      timedOut: true,
+      killed: res.killed,
+      notExited: res.notExited,
+      sftpStderr: res.stderr || "",
+      sftpStdout: res.stdout || "",
+    };
+  }
+  if (res.exitCode !== 0) {
+    return {
+      ok: false,
+      error: "sftp " + verb + " failed: exit code " + res.exitCode + (res.signal ? " (signal " + res.signal + ")" : ""),
+      exitCode: res.exitCode,
+      signal: res.signal,
+      sftpStderr: res.stderr || "",
+      sftpStdout: res.stdout || "",
+    };
+  }
+  return null;
+}
+
+/** push 入口：mode 决议后分流 ssh / http。 */
+async function pushDesktopFileToRemote(args) {
+  const pathErr = validateLocalPathArg(args?.path);
+  if (pathErr) return { ok: false, error: pathErr };
+  const modeRes = resolveTransferMode(args);
+  if (modeRes.error) return { ok: false, error: modeRes.error };
+  if (modeRes.mode === "ssh") return pushViaSsh(args);
+  return pushViaHttp(args);
+}
+
+/**
+ * 将桌面文件通过 HTTP(S) 直传到远端 URL（0.4.0 通道，mode:"http" 或仅给 remoteUrl 时走这里）。
  * 字节走 TLS 直连，不经 LLM；桌面主动发起，适配远端不能连桌面的约束。
  */
-async function pushDesktopFileToRemote(args) {
+async function pushViaHttp(args) {
   const rawPath = String(args?.path ?? "");
   if (!rawPath) return { ok: false, error: "path is required" };
   const abs = path.resolve(rawPath);
@@ -534,7 +931,7 @@ async function pushDesktopFileToRemote(args) {
   const tokenErr = validateToken(args?.token);
   if (tokenErr) return { ok: false, error: tokenErr };
 
-  const timeoutRaw = parseTimeoutMs(args?.timeoutMs);
+  const timeoutRaw = parseTimeoutMs(args?.timeoutMs, HTTP_TIMEOUT_BOUNDS);
   if (timeoutRaw && typeof timeoutRaw === "object" && timeoutRaw.error) {
     return { ok: false, error: timeoutRaw.error };
   }
@@ -632,39 +1029,68 @@ async function pushDesktopFileToRemote(args) {
   };
 }
 
-/**
- * 从远端 URL 拉取并落盘到桌面路径。
- * 字节走 HTTP(S) 直连，不经 LLM。
- */
-async function pullRemoteFileToDesktop(args) {
-  const remoteRaw = args?.remoteUrl;
-  const rawPath = String(args?.path ?? "");
-  if (!rawPath) return { ok: false, error: "path is required" };
-  const abs = path.resolve(rawPath);
-
-  const parsed = parseRemoteUrl(remoteRaw);
-  if (parsed.error) return { ok: false, error: parsed.error };
-  const u = parsed.url;
-
-  const tokenErr = validateToken(args?.token);
-  if (tokenErr) return { ok: false, error: tokenErr };
-
-  const timeoutRaw = parseTimeoutMs(args?.timeoutMs);
-  if (timeoutRaw && typeof timeoutRaw === "object" && timeoutRaw.error) {
-    return { ok: false, error: timeoutRaw.error };
+/** pull 落盘收尾（HTTP 与 SSH 共用）：TOCTOU 复核 → 原子 rename → 落盘 sha 终核。失败时已尽力清理 tmpPath。 */
+async function finalizePulledFile({ abs, tmpPath, existed, beforeSt, beforeSha, receivedSha }) {
+  // TOCTOU 复核：若目标已存在，确认未被改动
+  if (existed) {
+    try {
+      const re = await fsp.lstat(abs);
+      const inodeChanged = Boolean(beforeSt.ino && re.ino && beforeSt.ino !== re.ino);
+      if (inodeChanged || re.size !== beforeSt.size || re.mtimeMs !== beforeSt.mtimeMs) {
+        try { await fsp.unlink(tmpPath); } catch {}
+        return { ok: false, error: "target changed between verification and write; re-read it and retry" };
+      }
+      const reSha = await sha256OfFile(abs);
+      if (reSha !== beforeSha) {
+        try { await fsp.unlink(tmpPath); } catch {}
+        return { ok: false, error: "target changed between verification and write; re-read it and retry" };
+      }
+    } catch (e) {
+      if (e.code !== "ENOENT") {
+        try { await fsp.unlink(tmpPath); } catch {}
+        return { ok: false, error: "lstat failed before rename: " + (e.code || e.message) };
+      }
+      // 文件在验证后被删了，且调用方原本是覆盖场景，视为 changed
+      try { await fsp.unlink(tmpPath); } catch {}
+      return { ok: false, error: "target changed between verification and write; re-read it and retry" };
+    }
   }
-  const timeoutMs = timeoutRaw;
 
-  const expectedRemoteSha = args?.expectedRemoteSha256 ? String(args.expectedRemoteSha256).trim().toLowerCase() : null;
-  if (expectedRemoteSha && !isValidSha256(expectedRemoteSha)) {
-    return { ok: false, error: "expectedRemoteSha256 must be 64 hex characters" };
+  // 原子重命名
+  try {
+    await fsp.rename(tmpPath, abs);
+  } catch (e) {
+    try { await fsp.unlink(tmpPath); } catch {}
+    return { ok: false, error: "rename failed: " + (e.code || e.message) };
   }
+
+  // 最终校验：rename 成功后 sha 应与 receivedSha 一致；再算一次确认落盘无损
+  let finalSha = receivedSha;
+  try {
+    finalSha = await sha256OfFile(abs);
+    if (finalSha !== receivedSha) {
+      return { ok: false, error: "sha mismatch after rename: disk content differs", expected: receivedSha, actual: finalSha };
+    }
+  } catch {}
+
+  let finalSize = 0;
+  try {
+    finalSize = (await fsp.stat(abs)).size;
+  } catch {}
+  return { ok: true, sha256: finalSha, size: finalSize, action: existed ? "overwritten" : "created" };
+}
+
+/** pull 落盘目标的共享校验（HTTP 与 SSH 共用）：路径、目标状态、乐观锁。 */
+async function pullTargetGuard(args) {
+  const localErr = validateLocalPathArg(args?.path);
+  if (localErr) return { ok: false, error: localErr };
+  const abs = path.resolve(String(args?.path ?? ""));
+
   const expectedSha = args?.expectedSha256 ? String(args.expectedSha256).trim().toLowerCase() : null;
   if (expectedSha && !isValidSha256(expectedSha)) {
     return { ok: false, error: "expectedSha256 must be 64 hex characters" };
   }
 
-  // 目标状态检查
   let existed = false;
   let beforeSt = null;
   let beforeSha = null;
@@ -675,7 +1101,6 @@ async function pullRemoteFileToDesktop(args) {
     if (!st.isFile()) return { ok: false, error: "target is not a regular file" };
     existed = true;
     beforeSt = st;
-    // 若存在，校验乐观锁
     if (!expectedSha) {
       return { ok: false, error: "file exists; pass expectedSha256 (from read_desktop_file) to overwrite", existing: { size: st.size } };
     }
@@ -689,11 +1114,146 @@ async function pullRemoteFileToDesktop(args) {
     }
   } catch (e) {
     if (e.code !== "ENOENT") return { ok: false, error: "lstat failed: " + (e.code || e.message) };
-    // 不存在
     if (args?.allowCreate !== true) {
       return { ok: false, error: "file does not exist; pass allowCreate:true to create it" };
     }
   }
+  return { abs, existed, beforeSt, beforeSha };
+}
+
+/**
+ * SSH pull：sftp `get` 到同目录临时文件，再走与 HTTP pull 相同的 TOCTOU 复核 + 原子 rename。
+ * 字节由 sftp 经 SSH 隧道流式落盘，不经 LLM、不进 Node 内存。
+ */
+async function pullViaSsh(args) {
+  const hostRes = validateSshHost(args?.host);
+  if (hostRes.error) return { ok: false, error: hostRes.error };
+  const portRes = validateSshPort(args?.port);
+  if (portRes.error) return { ok: false, error: portRes.error };
+  const rpRes = validateRemotePath(args?.remotePath);
+  if (rpRes.error) return { ok: false, error: rpRes.error };
+
+  // get 的远端源路径会被 sftp_glob 展开（见 rejectGlobMeta 注释），命中 glob 元字符即拒绝
+  const globErr = rejectGlobMeta(rpRes.remotePath, "remotePath");
+  if (globErr) return { ok: false, error: globErr.error };
+  const timeoutRaw = parseTimeoutMs(args?.timeoutMs, SSH_TIMEOUT_BOUNDS);
+  if (timeoutRaw && typeof timeoutRaw === "object" && timeoutRaw.error) {
+    return { ok: false, error: timeoutRaw.error };
+  }
+  const timeoutMs = timeoutRaw;
+
+  const tg = await pullTargetGuard(args);
+  if (tg.error !== undefined) return tg;
+
+  const tmpName = "." + path.basename(tg.abs) + ".tmp-" + crypto.randomBytes(6).toString("hex");
+  const tmpPath = path.join(path.dirname(tg.abs), tmpName);
+
+  try {
+    await fsp.mkdir(path.dirname(tg.abs), { recursive: true });
+  } catch (e) {
+    return { ok: false, error: "mkdir failed: " + (e.code || e.message) };
+  }
+
+  const batchLine = "get " + quoteBatchArg(rpRes.remotePath) + " " + quoteBatchArg(tmpPath);
+  const res = await runSftpTransfer({ batchLine, host: hostRes.host, port: portRes.port, timeoutMs });
+  const err = sftpErrorOf(res, "pull", timeoutMs);
+  if (err) {
+    try { await fsp.unlink(tmpPath); } catch {}
+    return err;
+  }
+
+  let receivedSha;
+  try {
+    receivedSha = await sha256OfFile(tmpPath);
+  } catch (e) {
+    try { await fsp.unlink(tmpPath); } catch {}
+    return { ok: false, error: "sha256 of received temp file failed: " + (e.code || e.message) };
+  }
+
+  // expectedRemoteSha256：SSH 通道用“收到内容的 sha”兑现（HTTP 通道比对响应头 / 落盘 sha）。
+  // 之前这里会静默忽略该参数，调用方会误以为校验过。
+  const expectedRemoteSha = args?.expectedRemoteSha256 ? String(args.expectedRemoteSha256).trim().toLowerCase() : null;
+  if (expectedRemoteSha) {
+    if (!isValidSha256(expectedRemoteSha)) {
+      try { await fsp.unlink(tmpPath); } catch {}
+      return { ok: false, error: "expectedRemoteSha256 must be 64 hex characters" };
+    }
+    if (expectedRemoteSha !== receivedSha) {
+      try { await fsp.unlink(tmpPath); } catch {}
+      return {
+        ok: false,
+        error: "expectedRemoteSha256 mismatch: the received remote content differs",
+        expected: expectedRemoteSha,
+        actual: receivedSha,
+      };
+    }
+  }
+
+  const fin = await finalizePulledFile({
+    abs: tg.abs,
+    tmpPath,
+    existed: tg.existed,
+    beforeSt: tg.beforeSt,
+    beforeSha: tg.beforeSha,
+    receivedSha,
+  });
+  if (!fin.ok) return { ok: false, error: fin.error };
+
+  return {
+    ok: true,
+    path: tg.abs,
+    host: hostRes.host,
+    remotePath: rpRes.remotePath,
+    transport: "ssh",
+    bytesReceived: fin.size,
+    size: fin.size,
+    sha256: fin.sha256,
+    action: fin.action,
+  };
+}
+
+/** pull 入口：mode 决议后分流 ssh / http。 */
+async function pullRemoteFileToDesktop(args) {
+  const pathErr = validateLocalPathArg(args?.path);
+  if (pathErr) return { ok: false, error: pathErr };
+  const modeRes = resolveTransferMode(args);
+  if (modeRes.error) return { ok: false, error: modeRes.error };
+  if (modeRes.mode === "ssh") return pullViaSsh(args);
+  return pullViaHttp(args);
+}
+
+/**
+ * 从远端 URL 拉取并落盘到桌面路径（0.4.0 通道，mode:"http" 或仅给 remoteUrl 时走这里）。
+ * 字节走 HTTP(S) 直连，不经 LLM。
+ */
+async function pullViaHttp(args) {
+  const remoteRaw = args?.remoteUrl;
+  // path 校验与解析由 pullRemoteFileToDesktop 入口 + pullTargetGuard 完成
+
+  const parsed = parseRemoteUrl(remoteRaw);
+  if (parsed.error) return { ok: false, error: parsed.error };
+  const u = parsed.url;
+
+  const tokenErr = validateToken(args?.token);
+  if (tokenErr) return { ok: false, error: tokenErr };
+
+  const timeoutRaw = parseTimeoutMs(args?.timeoutMs, HTTP_TIMEOUT_BOUNDS);
+  if (timeoutRaw && typeof timeoutRaw === "object" && timeoutRaw.error) {
+    return { ok: false, error: timeoutRaw.error };
+  }
+  const timeoutMs = timeoutRaw;
+
+  const expectedRemoteSha = args?.expectedRemoteSha256 ? String(args.expectedRemoteSha256).trim().toLowerCase() : null;
+  if (expectedRemoteSha && !isValidSha256(expectedRemoteSha)) {
+    return { ok: false, error: "expectedRemoteSha256 must be 64 hex characters" };
+  }
+  // 目标状态检查与乐观锁（与 SSH pull 共用）
+  const tg = await pullTargetGuard(args);
+  if (tg.error !== undefined) return tg;
+  const abs = tg.abs;
+  const existed = tg.existed;
+  const beforeSt = tg.beforeSt;
+  const beforeSha = tg.beforeSha;
 
   // 发起 GET
   const headers = {};
@@ -869,73 +1429,18 @@ async function pullRemoteFileToDesktop(args) {
     return { ok: false, error: "received file sha does not match X-File-SHA256 header", expected: responseInfo.remoteShaHeader, actual: receivedSha };
   }
 
-  // TOCTOU 复核：若目标已存在，确认未被改动
-  if (existed) {
-    try {
-      const re = await fsp.lstat(abs);
-      const inodeChanged = Boolean(beforeSt.ino && re.ino && beforeSt.ino !== re.ino);
-      if (inodeChanged || re.size !== beforeSt.size || re.mtimeMs !== beforeSt.mtimeMs) {
-        try {
-          await fsp.unlink(tmpPath);
-        } catch {}
-        return { ok: false, error: "target changed between verification and write; re-read it and retry" };
-      }
-      // 再核 sha（防御性）
-      const reSha = await sha256OfFile(abs);
-      if (reSha !== beforeSha) {
-        try {
-          await fsp.unlink(tmpPath);
-        } catch {}
-        return { ok: false, error: "target changed between verification and write; re-read it and retry" };
-      }
-    } catch (e) {
-      if (e.code !== "ENOENT") {
-        try {
-          await fsp.unlink(tmpPath);
-        } catch {}
-        return { ok: false, error: "lstat failed before rename: " + (e.code || e.message) };
-      }
-      // 文件在验证后被删了，且调用方原本是覆盖场景，视为 changed
-      try {
-        await fsp.unlink(tmpPath);
-      } catch {}
-      return { ok: false, error: "target changed between verification and write; re-read it and retry" };
-    }
-  }
-
-  // 原子重命名
-  try {
-    await fsp.rename(tmpPath, abs);
-  } catch (e) {
-    try {
-      await fsp.unlink(tmpPath);
-    } catch {}
-    return { ok: false, error: "rename failed: " + (e.code || e.message) };
-  }
-
-  // 最终校验
-  let finalSha = receivedSha;
-  try {
-    // 若 rename 成功，文件 sha 即 receivedSha；再算一次以确认落盘无损
-    finalSha = await sha256OfFile(abs);
-    if (finalSha !== receivedSha) {
-      return { ok: false, error: "sha mismatch after rename: disk content differs", expected: receivedSha, actual: finalSha };
-    }
-  } catch {}
-
-  let finalSize = bytesReceived;
-  try {
-    finalSize = (await fsp.stat(abs)).size;
-  } catch {}
+  // 落盘收尾（TOCTOU 复核 → 原子 rename → 终核），与 SSH pull 共用
+  const fin = await finalizePulledFile({ abs, tmpPath, existed, beforeSt, beforeSha, receivedSha });
+  if (!fin.ok) return { ok: false, error: fin.error };
 
   return {
     ok: true,
     path: abs,
     remoteUrl: u.toString(),
     bytesReceived,
-    size: finalSize,
-    sha256: finalSha,
-    action: existed ? "overwritten" : "created",
+    size: fin.size,
+    sha256: fin.sha256,
+    action: fin.action,
     remoteStatus: responseInfo.statusCode,
   };
 }
@@ -1019,27 +1524,47 @@ async function onLoad() {
   await pi.agent.registerTool({
     name: "push_desktop_file_to_remote",
     description:
-      "Push a desktop file to a remote HTTP(S) URL (bytes go over TLS, not through LLM context). Use for large/binary files where base64 via LLM is lossy. Requires explicit user authorization for the specific path and remoteUrl (remoteUrl is unrestricted — only call with a user-authorized destination; auth via Authorization: Bearer <token> header, token in URL is compatibility-only and will appear in logs). The file is streamed via node:http(s) with X-File-SHA256 header.",
+      "Push a desktop file to the remote host, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): pass host (ssh-config alias or user@host) + remotePath and the file is uploaded with sftp (BatchMode, no interaction, put overwrites an existing remote file). The local source path must not contain the glob metacharacters * ? [ (rejected conservatively; backslashes are fine, so Windows paths work); expectedRemoteSha256 is rejected on the ssh channel. The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized destination; auth via Authorization: Bearer <token> header). Requires explicit user authorization for the specific path and destination. Returns sha256/size for verification.",
     risk: "high",
     schema: {
       type: "object",
       properties: {
         path: { type: "string", description: "Absolute path on the desktop to push" },
+        mode: {
+          type: "string",
+          description:
+            "Transport: 'ssh' (sftp, default when host is given) or 'http' (0.4.0 channel, needs remoteUrl). Omit to infer from which fields are present; passing both host and remoteUrl without mode is an error.",
+        },
+        host: {
+          type: "string",
+          description:
+            "SSH: ssh-config alias (recommended — reuses the desktop's existing ssh config and key, nothing to set up) or user@host. No spaces; must not start with '-'.",
+        },
+        port: { type: "integer", description: "SSH: TCP port (1-65535) if not already set in the ssh config entry" },
+        remotePath: {
+          type: "string",
+          description:
+            "SSH: absolute remote destination path, e.g. /srv/transfer/file.bin. No control characters. put overwrites if the file exists (scp-like semantics).",
+        },
         remoteUrl: {
           type: "string",
           description:
-            "Destination http(s) URL, e.g. http://127.0.0.1:9876/push/file.bin or https://example.com/dfr/push/file.bin (auth via Authorization: Bearer <token> header; putting token in URL is supported for compatibility but will appear in access logs — not recommended)",
+            "HTTP: destination http(s) URL, e.g. http://127.0.0.1:9876/push/file.bin or https://example.com/dfr/push/file.bin (auth via Authorization: Bearer <token> header; putting token in URL is supported for compatibility but will appear in access logs — not recommended)",
         },
         token: {
           type: "string",
           description:
-            "Bearer token; sent as Authorization: Bearer <token> header if >=16 chars. Do not put token in the URL — it will appear in access logs. Path token /push/<token>/ is only for compatibility.",
+            "HTTP only: Bearer token; sent as Authorization: Bearer <token> header if >=16 chars. Do not put token in the URL — it will appear in access logs. Path token /push/<token>/ is only for compatibility.",
         },
         expectedSha256: { type: "string", description: "Optional guard: sha256 of the current file; refused if it changed" },
-        timeoutMs: { type: "integer", description: "Request timeout in ms (5000-120000, default 60000)" },
-        method: { type: "string", description: "HTTP method PUT or POST (default PUT)" },
+        timeoutMs: {
+          type: "integer",
+          description:
+            "Timeout in ms. HTTP: 5000-120000, default 60000. SSH: 5000-1800000, default 300000. On SSH timeout the sftp process is killed.",
+        },
+        method: { type: "string", description: "HTTP only: PUT or POST (default PUT)" },
       },
-      required: ["path", "remoteUrl"],
+      required: ["path"],
     },
     execute: async (args) => pushDesktopFileToRemote(args),
   });
@@ -1047,28 +1572,47 @@ async function onLoad() {
   await pi.agent.registerTool({
     name: "pull_remote_file_to_desktop",
     description:
-      "Pull a remote HTTP(S) URL and save it to a desktop path (bytes go over TLS, not through LLM context). Use for large/binary files. Requires explicit user authorization for the specific path and remoteUrl (remoteUrl is unrestricted — only call with a user-authorized source; auth via Authorization header, token in URL is compatibility-only). Streams to a temp file then atomically renames.",
+      "Pull a remote file and save it to a desktop path, bytes never pass through LLM context. Default channel is SSH over the desktop's existing ssh config (zero user setup): pass host (ssh-config alias or user@host) + remotePath and the file is downloaded with sftp (BatchMode, no interaction) to a temp file, sha256-verified, then atomically renamed. The remote source path must not contain the glob metacharacters * ? [ (rejected conservatively); expectedRemoteSha256 is honoured on the ssh channel. The 0.4.0 HTTP channel is kept: pass mode:'http' with remoteUrl (unrestricted — only call with a user-authorized source; auth via Authorization header). Overwrite requires expectedSha256 of the current target; create requires allowCreate:true. Requires explicit user authorization for the specific path and source.",
     risk: "high",
     schema: {
       type: "object",
       properties: {
+        path: { type: "string", description: "Absolute desktop destination path" },
+        mode: {
+          type: "string",
+          description:
+            "Transport: 'ssh' (sftp, default when host is given) or 'http' (0.4.0 channel, needs remoteUrl). Omit to infer from which fields are present; passing both host and remoteUrl without mode is an error.",
+        },
+        host: {
+          type: "string",
+          description:
+            "SSH: ssh-config alias (recommended — reuses the desktop's existing ssh config and key, nothing to set up) or user@host. No spaces; must not start with '-'.",
+        },
+        port: { type: "integer", description: "SSH: TCP port (1-65535) if not already set in the ssh config entry" },
+        remotePath: {
+          type: "string",
+          description:
+            "SSH: absolute remote source path, e.g. /srv/transfer/file.bin. No control characters.",
+        },
         remoteUrl: {
           type: "string",
           description:
-            "Source http(s) URL to GET, e.g. http://127.0.0.1:9876/pull/file.bin or https://example.com/dfr/pull/file.bin (auth via Authorization header; token in URL is compatibility-only and will appear in logs)",
+            "HTTP: source http(s) URL to GET, e.g. http://127.0.0.1:9876/pull/file.bin or https://example.com/dfr/pull/file.bin (auth via Authorization header; token in URL is compatibility-only and will appear in logs)",
         },
-        path: { type: "string", description: "Absolute desktop destination path" },
-        token: { type: "string", description: "Bearer token; sent as Authorization: Bearer <token> header if >=16 chars. Do not put token in the URL." },
-        expectedRemoteSha256: { type: "string", description: "Optional guard: expected sha256 of the remote content" },
+        token: { type: "string", description: "HTTP only: Bearer token; sent as Authorization: Bearer <token> header if >=16 chars. Do not put token in the URL." },
+        expectedRemoteSha256: { type: "string", description: "HTTP only: optional guard, expected sha256 of the remote content" },
         expectedSha256: { type: "string", description: "Required when overwriting: sha256 of the current target file" },
         allowCreate: { type: "boolean", description: "Required when the file does not exist yet" },
-        timeoutMs: { type: "integer", description: "Request timeout in ms (5000-120000, default 60000)" },
+        timeoutMs: {
+          type: "integer",
+          description:
+            "Timeout in ms. HTTP: 5000-120000, default 60000. SSH: 5000-1800000, default 300000. On SSH timeout the sftp process is killed.",
+        },
       },
-      required: ["remoteUrl", "path"],
+      required: ["path"],
     },
     execute: async (args) => pullRemoteFileToDesktop(args),
   });
-
 }
 
 async function onUnload() {

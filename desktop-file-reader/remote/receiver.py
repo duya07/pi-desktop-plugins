@@ -2,7 +2,8 @@
 """
 一次性文件接收/发送端（仅标准库）。
 
-用途：配合 desktop-file-reader 0.4.0 的 push/pull 直传。
+用途：配合 desktop-file-reader 的 push/pull 直传。**0.5.0 起 push/pull 默认走 SSH（sftp）直传，
+本脚本不是默认路径**——只有远端**已经存在**一个可达的 HTTP 文件端点时，才用 `mode:"http"` 配合它。
   - PUT/POST /push/<name>  → 落盘到 --dir（鉴权用 Authorization 头）
   - GET /pull/<name>       → 从 --dir 读取（同上）
   - 兼容：/push/<token>/<name> / /pull/<token>/<name> （token 在路径，易进日志，不推荐）
@@ -16,19 +17,16 @@
   - 超时由客户端控制，服务端仅限制 Content-Length
   - 凭据不进命令行：优先 --token-file / DFR_RECEIVER_TOKEN，--token 仅调试用（会出现在 ps）
 
-用法（按可行性排序）：
-  # 首选：SSH 本地转发（零远端配置改动，复用既有 SSH 通道）
-  #   桌面：ssh -L 9876:127.0.0.1:9876 <远端别名>
-  #   远端（推荐，不进 ps）：
-  #     umask 077 && openssl rand -hex 16 > /tmp/dfr.token
-  #     python3 receiver.py --bind 127.0.0.1:9876 --dir /tmp/dfr --token-file /tmp/dfr.token
-  #   插件：push_desktop_file_to_remote({ path, remoteUrl: "http://127.0.0.1:9876/push/file.bin", token: "<从 cat /tmp/dfr.token 取值>" })
-
-  # 次选：经 1Panel OpenResty 反代到 127.0.0.1:9876（需授权改 nginx，见 DESIGN）
+用法（仅 `mode:"http"`；端点由调用方自己的环境提供，本插件不代为搭建）：
+  # 远端（token 不进 ps；监听回环，不要绑公网）：
   #   umask 077 && openssl rand -hex 16 > /tmp/dfr.token
   #   python3 receiver.py --bind 127.0.0.1:9876 --dir /tmp/dfr --token-file /tmp/dfr.token
-
-  # 不推荐：公网直连（需防火墙放行）
+  # 插件：push_desktop_file_to_remote({ path, mode: "http", remoteUrl: "http://127.0.0.1:9876/push/file.bin", token: "<从 cat /tmp/dfr.token 取值>" })
+  #
+  # 若远端已有反代/网关指向该回环端口，remoteUrl 换成对应 https URL 即可（属于调用方既有环境，
+  # 本文档不再给出任何“先让用户配一遍”的步骤——0.4.0 那套 ssh -L / 改反代的落地指引已被用户否决）。
+  #
+  # 不推荐：公网直连（需防火墙放行，暴露面大）
   #   umask 077 && openssl rand -hex 16 > /tmp/dfr.token
   #   python3 receiver.py --bind 0.0.0.0:8765 --dir /tmp/dfr --token-file /tmp/dfr.token
 
