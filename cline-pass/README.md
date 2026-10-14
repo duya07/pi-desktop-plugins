@@ -78,7 +78,8 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 ### 6 · 用起来
 
 模型选择器里选 **baseUrl 是 `http://127.0.0.1:41593/v1` 的那个 provider**（也就是上一节导入出来的那个）下的模型。
-注意和自建的 `api.cline.bot` provider 区分开：导入进来的模型 id 带 `cline-pass-local/` 前缀、直连那条是 `cline-pass/`，**不会再同名**（见下文「认准 baseUrl」）；但选 provider 时仍要认准 baseUrl。
+注意和自建的 `api.cline.bot` provider 区分开：导入进来的模型 id 带 `cline-pass-local/` 前缀、
+直连那条是 `cline-pass/`，**不会再同名**（见下文「认准 baseUrl」）；但选 provider 时仍要认准 baseUrl。
 
 ---
 
@@ -120,7 +121,8 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 > 对照组：只在网关 provider 里存在的 `cline-pass/glm-5.3`（且未勾「可供 AI 自动调度」）被宿主**直接拒绝** ——
 > `Model "custom/cline-pass/glm-5.3" is not available for delegation. Available: …` → 说明门禁确实生效，而撞名的那条是另一个 provider。
 > 想让子代理只走网关：把旧直连 provider 里**同名**模型的「可供 AI 自动调度」取消勾选（或直接停用它），再勾上网关 provider 的模型；
-> 否则子代理会悄悄走直连那条，账号池 / pin / failover / 账本全都看不到这部分流量。**插件侧的根治办法见下一节**：生成配置里的模型 id 带 `cline-pass-local/` 前缀，撞名就不存在了；上面这条「取消勾选」只是零代码的临时办法。
+> 否则子代理会悄悄走直连那条，账号池 / pin / failover / 账本全都看不到这部分流量。
+> **插件侧的根治办法见下一节**：生成配置里的模型 id 带 `cline-pass-local/` 前缀，撞名就不存在了；上面这条「取消勾选」只是零代码的临时办法。
 
 ---
 
@@ -280,7 +282,6 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
     真机核对（拿插件自己的网关对着真实数据目录跑一次 `ops.quota({ refresh: true })`）：3 行、host 行标 `source:"host"`、
     面板会只列 2 个内联账号。顺带确认用户在面板里改 key 生效了：两行掩码已不同（掩码只回前 6 + 后 4 位，形如 `sk_aaa***1111`），`duplicate:false`，
     读数各自独立（21/36/18% 与 0/100/84%）。
-
 18. **整条 provider 从模型选择器里消失（真机+宿主代码定位）**：用户截图 `Cline Pass（本地网关）` 那一行挂着「尚未设置 API 密钥」，
     而模型列表里根本选不到。根因不是面板也不是网关照，而是**宿主的选择器门槛**：
     `SettingsPage` 的徽章条件是 `!hasSecret && authKind !== "none"`，模型选择器（`ComposerPermissionPicker` / `listReadyPluginModels`）
@@ -440,7 +441,8 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
   **旧实例没有被拆掉**：`http://127.0.0.1:41593/v1/models` 仍然 `HTTP 200`（14 个目录模型），也就是这段等待期里网关照常服务、
   只是新代码尚未生效；在插件页重新加载一次即可全部生效。对照证据：另一个插件 `cn.star.skill-learning` 的
   `plugin.api models.list ok:true count:63` 说明这个权限名与 `pi.models.list()` 在真机上是通的。
-- 本轮新增（变体 ①，2026-10-13 深夜）：插件**不再声明任何 provider**（`contributes.providers` 与 `provider.register` 权限都删了），模型参数只写插件配置；面板新增「生成配置 / 写入文件」，导出给 PI-Desktop「从其他工具导入」用 —— 原因与实测证据见上文第 4 步的 NOTE。
+- 本轮新增（变体 ①，2026-10-13 深夜）：插件**不再声明任何 provider**（`contributes.providers` 与 `provider.register` 权限都删了），
+  模型参数只写插件配置；面板新增「生成配置 / 写入文件」，导出给 PI-Desktop「从其他工具导入」用 —— 原因与实测证据见上文第 4 步的 NOTE。
   离线验证：`node --test test/gateway.test.mjs` **54/54**、`node test/host-sync.cjs` 75、`node test/render-import-config.cjs` 36、
   `node test/render-host-sync.cjs` 25、`node test/render-model-card.cjs` 60、`node test/render-quota.cjs` 63、`node test/panel-wiring.cjs` OK；
   `node --check` 全部 JS 与测试脚本 0 失败；`PluginCheck` 通过（22 文件；warning 列 `agent.tool.register` 与 `fs.write`）。
