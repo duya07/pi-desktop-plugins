@@ -25,14 +25,27 @@
  *   4. 必须传 `expectedSha256`（首选）或 `expectedSize`，与调用方**看过的内容**绑定；
  *      校验通过后还会复核 size/mtime/inode 未变才真正 unlink（缩小 TOCTOU 窗口）。
  *   另支持 `dryRun: true` 只预演不删除。
+ *
+ * 传输重构（0.4.0）：
+ *   - `push_desktop_file_to_remote` / `pull_remote_file_to_desktop` 通过 HTTP(S) 直传字节，
+ *     字节不经 LLM 上下文，避免长 base64 失真；桌面主动发起，适配“远端不能连桌面”的网络约束。
  */
 const fsp = require("node:fs/promises");
+const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const http = require("node:http");
+const https = require("node:https");
+const os = require("node:os");
 
 const MAX_CHUNK = 1024 * 1024; // 单次读取上限 1 MiB
 const DEFAULT_CHUNK = 256 * 1024;
 const MAX_WRITE = 4 * 1024 * 1024; // 单次写入上限 4 MiB
+const MAX_HTTP_BYTES = 50 * 1024 * 1024; // HTTP 单次传输上限 50 MiB（与 nginx client_max_body_size 对齐）
+const DEFAULT_TIMEOUT_MS = 60 * 1000;
+const MIN_TIMEOUT_MS = 5 * 1000;
+const MAX_TIMEOUT_MS = 120 * 1000;
+const MAX_RESPONSE_BYTES = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // 删除工具的保护清单：这些路径"删了就出事"，无条件拒绝，且没有参数可以绕过。
@@ -123,6 +136,117 @@ async function sha256OfFile(abs) {
   return h.digest("hex");
 }
 
+// ---------------------------------------------------------------------------
+// HTTP 直传共用校验
+// ---------------------------------------------------------------------------
+
+/** 校验 remoteUrl 合法性，返回 URL 对象或错误字符串。 */
+function parseRemoteUrl(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return { error: "remoteUrl is required" };
+  if (s.length > 2048) return { error: "remoteUrl too long (>2048)" };
+  let u;
+  try {
+    u = new URL(s);
+  } catch {
+    return { error: "remoteUrl is not a valid URL" };
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    return { error: "remoteUrl must be http:// or https://" };
+  }
+  return { url: u };
+}
+
+/** 校验 token（若提供），返回错误字符串或 null。token 不回显。 */
+function validateToken(token) {
+  if (token === undefined || token === null || token === "") return null;
+  const s = String(token);
+  if (s.length < 16) return "token too short (min 16 characters)";
+  if (s.length > 512) return "token too long (>512)";
+  if (/\s/.test(s)) return "token must not contain whitespace";
+  return null;
+}
+
+/** 校验 sha256 hex。 */
+function isValidSha256(s) {
+  return typeof s === "string" && /^[0-9a-f]{64}$/.test(s.trim().toLowerCase());
+}
+
+/** 解析 timeoutMs，返回数值或错误。 */
+function parseTimeoutMs(v) {
+  if (v === undefined || v === null) return DEFAULT_TIMEOUT_MS;
+  const n = Number(v);
+  if (!Number.isInteger(n)) return { error: "timeoutMs must be an integer" };
+  if (n < MIN_TIMEOUT_MS || n > MAX_TIMEOUT_MS) {
+    return { error: "timeoutMs must be between " + MIN_TIMEOUT_MS + " and " + MAX_TIMEOUT_MS };
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP 底层：流式请求与响应收集
+// ---------------------------------------------------------------------------
+
+/**
+ * 发起 HTTP(S) 请求，返回 { statusCode, headers, body }。
+ * body 收集上限 MAX_RESPONSE_BYTES，超出则截断。
+ * 超时通过 req.setTimeout 实现。
+ */
+function httpRequestRaw(u, opts, bodyStream) {
+  return new Promise((resolve, reject) => {
+    const isHttps = u.protocol === "https:";
+    const mod = isHttps ? https : http;
+    const reqOpts = {
+      method: opts.method,
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname + u.search,
+      headers: opts.headers,
+    };
+    const req = mod.request(reqOpts, (res) => {
+      const chunks = [];
+      let total = 0;
+      let truncated = false;
+      res.on("data", (chunk) => {
+        if (truncated) return;
+        total += chunk.length;
+        if (total > MAX_RESPONSE_BYTES) {
+          truncated = true;
+          // 仍需消费剩余数据以释放连接
+          res.resume();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        resolve({
+          statusCode: res.statusCode,
+          headers: res.headers,
+          body: truncated ? body.slice(0, MAX_RESPONSE_BYTES) + "…(truncated)" : body,
+          truncated,
+        });
+      });
+      res.on("error", (e) => reject(e));
+    });
+    req.on("error", (e) => reject(e));
+    // 超时
+    req.setTimeout(opts.timeoutMs, () => {
+      const err = new Error("request timeout after " + opts.timeoutMs + "ms");
+      err.code = "TIMEOUT";
+      req.destroy(err);
+    });
+    if (bodyStream) {
+      bodyStream.on("error", (e) => {
+        req.destroy(e);
+      });
+      bodyStream.pipe(req);
+    } else {
+      req.end();
+    }
+  });
+}
+
 async function readDesktopFile(args) {
   const raw = String(args?.path ?? "");
   if (!raw) return { ok: false, error: "path is required" };
@@ -131,7 +255,13 @@ async function readDesktopFile(args) {
   const offset = Math.max(0, Number(args?.offset ?? 0) | 0);
   const length = Math.min(MAX_CHUNK, Math.max(1, Number(args?.length ?? DEFAULT_CHUNK) | 0));
 
-  const st = await fsp.stat(abs);
+  let st;
+  try {
+    st = await fsp.stat(abs);
+  } catch (e) {
+    if (e.code === "ENOENT") return { ok: false, error: "file not found: " + abs };
+    return { ok: false, error: "stat failed: " + (e.code || e.message) };
+  }
   if (st.isDirectory()) {
     return { ok: false, error: "path is a directory; use list_desktop_dir" };
   }
@@ -166,7 +296,12 @@ async function listDesktopDir(args) {
   if (!raw) return { ok: false, error: "path is required" };
   const abs = path.resolve(raw);
 
-  const entries = await fsp.readdir(abs, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await fsp.readdir(abs, { withFileTypes: true });
+  } catch (e) {
+    return { ok: false, error: "readdir failed: " + (e.code || e.message) };
+  }
   const out = [];
   for (const e of entries) {
     const full = path.join(abs, e.name);
@@ -379,6 +514,432 @@ async function deleteDesktopFile(args) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// 新增：HTTP 直传（字节不经 LLM）
+// ---------------------------------------------------------------------------
+
+/**
+ * 将桌面文件通过 HTTP(S) 直传到远端 URL。
+ * 字节走 TLS 直连，不经 LLM；桌面主动发起，适配远端不能连桌面的约束。
+ */
+async function pushDesktopFileToRemote(args) {
+  const rawPath = String(args?.path ?? "");
+  if (!rawPath) return { ok: false, error: "path is required" };
+  const abs = path.resolve(rawPath);
+
+  const parsed = parseRemoteUrl(args?.remoteUrl);
+  if (parsed.error) return { ok: false, error: parsed.error };
+  const u = parsed.url;
+
+  const tokenErr = validateToken(args?.token);
+  if (tokenErr) return { ok: false, error: tokenErr };
+
+  const timeoutRaw = parseTimeoutMs(args?.timeoutMs);
+  if (timeoutRaw && typeof timeoutRaw === "object" && timeoutRaw.error) {
+    return { ok: false, error: timeoutRaw.error };
+  }
+  const timeoutMs = timeoutRaw;
+
+  const methodRaw = args?.method ? String(args.method).toUpperCase() : "PUT";
+  if (methodRaw !== "PUT" && methodRaw !== "POST") {
+    return { ok: false, error: "method must be PUT or POST" };
+  }
+
+  const expectedSha = args?.expectedSha256 ? String(args.expectedSha256).trim().toLowerCase() : null;
+  if (expectedSha && !isValidSha256(expectedSha)) {
+    return { ok: false, error: "expectedSha256 must be 64 hex characters" };
+  }
+
+  // 文件校验
+  let st;
+  try {
+    st = await fsp.lstat(abs);
+  } catch (e) {
+    if (e.code === "ENOENT") return { ok: false, error: "file not found: " + abs };
+    return { ok: false, error: "lstat failed: " + (e.code || e.message) };
+  }
+  if (st.isSymbolicLink()) return { ok: false, error: "path is a symbolic link; refusing (this tool never follows links)" };
+  if (st.isDirectory()) return { ok: false, error: "path is a directory; refusing" };
+  if (!st.isFile()) return { ok: false, error: "path is not a regular file" };
+
+  let stat2;
+  try {
+    stat2 = await fsp.stat(abs);
+  } catch (e) {
+    return { ok: false, error: "stat failed: " + (e.code || e.message) };
+  }
+  if (stat2.size > MAX_HTTP_BYTES) {
+    return { ok: false, error: "file too large: " + stat2.size + " > " + MAX_HTTP_BYTES + " (50 MiB limit)" };
+  }
+
+  // 乐观锁校验
+  let fileSha = null;
+  try {
+    fileSha = await sha256OfFile(abs);
+  } catch (e) {
+    return { ok: false, error: "sha256 failed: " + (e.code || e.message) };
+  }
+  if (expectedSha && expectedSha !== fileSha) {
+    return { ok: false, error: "expectedSha256 mismatch: the file changed after you read it", expected: expectedSha, actual: fileSha };
+  }
+
+  // 发起请求
+  const headers = {
+    "Content-Type": "application/octet-stream",
+    "Content-Length": String(stat2.size),
+    "X-File-SHA256": fileSha,
+    "X-File-Name": path.basename(abs),
+  };
+  if (args?.token) headers["Authorization"] = "Bearer " + String(args.token);
+
+  let bodyStream;
+  try {
+    bodyStream = fs.createReadStream(abs);
+  } catch (e) {
+    return { ok: false, error: "failed to open file for reading: " + (e.message || String(e)) };
+  }
+
+  let resp;
+  try {
+    resp = await httpRequestRaw(u, { method: methodRaw, headers, timeoutMs }, bodyStream);
+  } catch (e) {
+    // 确保流关闭
+    try {
+      bodyStream.destroy();
+    } catch {}
+    if (e.code === "TIMEOUT" || /timeout/i.test(e.message || "")) {
+      return { ok: false, error: "request timeout after " + timeoutMs + "ms" };
+    }
+    return { ok: false, error: "network error: " + (e.code || e.message || String(e)) };
+  }
+
+  // 拒绝重定向
+  if (resp.statusCode >= 300 && resp.statusCode < 400) {
+    return { ok: false, error: "redirect not allowed: remote returned " + resp.statusCode, remoteStatus: resp.statusCode, remoteBody: resp.body };
+  }
+  if (resp.statusCode < 200 || resp.statusCode >= 300) {
+    return { ok: false, error: "remote returned HTTP " + resp.statusCode, remoteStatus: resp.statusCode, remoteBody: resp.body };
+  }
+
+  return {
+    ok: true,
+    path: abs,
+    remoteUrl: u.toString(),
+    bytesSent: stat2.size,
+    sha256: fileSha,
+    remoteStatus: resp.statusCode,
+    remoteBody: resp.body,
+  };
+}
+
+/**
+ * 从远端 URL 拉取并落盘到桌面路径。
+ * 字节走 HTTP(S) 直连，不经 LLM。
+ */
+async function pullRemoteFileToDesktop(args) {
+  const remoteRaw = args?.remoteUrl;
+  const rawPath = String(args?.path ?? "");
+  if (!rawPath) return { ok: false, error: "path is required" };
+  const abs = path.resolve(rawPath);
+
+  const parsed = parseRemoteUrl(remoteRaw);
+  if (parsed.error) return { ok: false, error: parsed.error };
+  const u = parsed.url;
+
+  const tokenErr = validateToken(args?.token);
+  if (tokenErr) return { ok: false, error: tokenErr };
+
+  const timeoutRaw = parseTimeoutMs(args?.timeoutMs);
+  if (timeoutRaw && typeof timeoutRaw === "object" && timeoutRaw.error) {
+    return { ok: false, error: timeoutRaw.error };
+  }
+  const timeoutMs = timeoutRaw;
+
+  const expectedRemoteSha = args?.expectedRemoteSha256 ? String(args.expectedRemoteSha256).trim().toLowerCase() : null;
+  if (expectedRemoteSha && !isValidSha256(expectedRemoteSha)) {
+    return { ok: false, error: "expectedRemoteSha256 must be 64 hex characters" };
+  }
+  const expectedSha = args?.expectedSha256 ? String(args.expectedSha256).trim().toLowerCase() : null;
+  if (expectedSha && !isValidSha256(expectedSha)) {
+    return { ok: false, error: "expectedSha256 must be 64 hex characters" };
+  }
+
+  // 目标状态检查
+  let existed = false;
+  let beforeSt = null;
+  let beforeSha = null;
+  try {
+    const st = await fsp.lstat(abs);
+    if (st.isSymbolicLink()) return { ok: false, error: "target is a symbolic link; refusing" };
+    if (st.isDirectory()) return { ok: false, error: "target is a directory; refusing" };
+    if (!st.isFile()) return { ok: false, error: "target is not a regular file" };
+    existed = true;
+    beforeSt = st;
+    // 若存在，校验乐观锁
+    if (!expectedSha) {
+      return { ok: false, error: "file exists; pass expectedSha256 (from read_desktop_file) to overwrite", existing: { size: st.size } };
+    }
+    try {
+      beforeSha = await sha256OfFile(abs);
+    } catch (e) {
+      return { ok: false, error: "sha256 failed: " + (e.code || e.message) };
+    }
+    if (expectedSha !== beforeSha) {
+      return { ok: false, error: "expectedSha256 mismatch: the file changed after you read it", expected: expectedSha, actual: beforeSha };
+    }
+  } catch (e) {
+    if (e.code !== "ENOENT") return { ok: false, error: "lstat failed: " + (e.code || e.message) };
+    // 不存在
+    if (args?.allowCreate !== true) {
+      return { ok: false, error: "file does not exist; pass allowCreate:true to create it" };
+    }
+  }
+
+  // 发起 GET
+  const headers = {};
+  if (args?.token) headers["Authorization"] = "Bearer " + String(args.token);
+
+  const tmpName = "." + path.basename(abs) + ".tmp-" + crypto.randomBytes(6).toString("hex");
+  const tmpPath = path.join(path.dirname(abs), tmpName);
+
+  // 确保目录存在
+  try {
+    await fsp.mkdir(path.dirname(abs), { recursive: true });
+  } catch (e) {
+    return { ok: false, error: "mkdir failed: " + (e.code || e.message) };
+  }
+
+  let responseInfo = null;
+  let hash = crypto.createHash("sha256");
+  let bytesReceived = 0;
+  let responseFailed = null;
+
+  const isHttps = u.protocol === "https:";
+  const mod = isHttps ? https : http;
+
+  const getPromise = new Promise((resolve, reject) => {
+    const reqOpts = {
+      method: "GET",
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname + u.search,
+      headers,
+    };
+    const req = mod.request(reqOpts, (res) => {
+      // 先检查状态码与重定向
+      if (res.statusCode >= 300 && res.statusCode < 400) {
+        responseFailed = "redirect not allowed: remote returned " + res.statusCode;
+        res.resume();
+        // 收集一点 body 供诊断
+        const chunks = [];
+        res.on("data", (c) => {
+          if (chunks.length < 4) chunks.push(c);
+        });
+        res.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8").slice(0, 2048);
+          reject(Object.assign(new Error(responseFailed), { code: "REDIRECT", remoteStatus: res.statusCode, remoteBody: body }));
+        });
+        return;
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const chunks = [];
+        res.on("data", (c) => {
+          if (Buffer.concat(chunks).length < MAX_RESPONSE_BYTES) chunks.push(c);
+        });
+        res.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8").slice(0, 4096);
+          reject(Object.assign(new Error("remote returned HTTP " + res.statusCode), { code: "HTTP_ERROR", remoteStatus: res.statusCode, remoteBody: body }));
+        });
+        return;
+      }
+
+      // 检查 Content-Length
+      const clen = res.headers["content-length"] ? Number(res.headers["content-length"]) : null;
+      if (clen !== null && Number.isFinite(clen) && clen > MAX_HTTP_BYTES) {
+        res.resume();
+        reject(Object.assign(new Error("remote file too large: Content-Length " + clen + " > " + MAX_HTTP_BYTES), { code: "TOO_LARGE" }));
+        return;
+      }
+
+      // 检查远端声明的 sha（若有）
+      const remoteShaHeader = res.headers["x-file-sha256"] ? String(res.headers["x-file-sha256"]).toLowerCase() : null;
+      if (expectedRemoteSha && remoteShaHeader && expectedRemoteSha !== remoteShaHeader) {
+        res.resume();
+        reject(Object.assign(new Error("expectedRemoteSha256 mismatch with X-File-SHA256 header"), { code: "SHA_MISMATCH", expected: expectedRemoteSha, actual: remoteShaHeader }));
+        return;
+      }
+
+      responseInfo = { statusCode: res.statusCode, headers: res.headers, remoteShaHeader };
+
+      const out = fs.createWriteStream(tmpPath);
+      let finished = false;
+
+      out.on("error", (e) => {
+        if (!finished) {
+          finished = true;
+          res.destroy();
+          reject(e);
+        }
+      });
+
+      res.on("data", (chunk) => {
+        bytesReceived += chunk.length;
+        if (bytesReceived > MAX_HTTP_BYTES) {
+          if (!finished) {
+            finished = true;
+            res.destroy();
+            out.destroy();
+            reject(Object.assign(new Error("remote file too large: received " + bytesReceived + " > " + MAX_HTTP_BYTES), { code: "TOO_LARGE" }));
+          }
+          return;
+        }
+        hash.update(chunk);
+      });
+
+      res.on("error", (e) => {
+        if (!finished) {
+          finished = true;
+          out.destroy();
+          reject(e);
+        }
+      });
+
+      // 管道
+      res.pipe(out);
+      out.on("finish", () => {
+        if (!finished) {
+          finished = true;
+          resolve();
+        }
+      });
+    });
+
+    req.on("error", (e) => reject(e));
+    req.setTimeout(timeoutMs, () => {
+      const err = new Error("request timeout after " + timeoutMs + "ms");
+      err.code = "TIMEOUT";
+      req.destroy(err);
+    });
+    req.end();
+  });
+
+  let getError = null;
+  try {
+    await getPromise;
+  } catch (e) {
+    getError = e;
+    // 清理临时文件
+    try {
+      await fsp.unlink(tmpPath);
+    } catch {}
+    if (e.code === "TIMEOUT" || /timeout/i.test(e.message || "")) {
+      return { ok: false, error: "request timeout after " + timeoutMs + "ms" };
+    }
+    if (e.code === "REDIRECT") {
+      return { ok: false, error: e.message, remoteStatus: e.remoteStatus, remoteBody: e.remoteBody };
+    }
+    if (e.code === "HTTP_ERROR") {
+      return { ok: false, error: e.message, remoteStatus: e.remoteStatus, remoteBody: e.remoteBody };
+    }
+    if (e.code === "TOO_LARGE") {
+      return { ok: false, error: e.message };
+    }
+    if (e.code === "SHA_MISMATCH") {
+      return { ok: false, error: e.message, expected: e.expected, actual: e.actual };
+    }
+    return { ok: false, error: "network error: " + (e.code || e.message || String(e)) };
+  }
+
+  // 此时已落盘到 tmpPath，计算 sha
+  const receivedSha = hash.digest("hex");
+
+  // 若提供了 expectedRemoteSha256 且响应头未提供，则比对落盘后 sha
+  if (expectedRemoteSha && !responseInfo.remoteShaHeader && expectedRemoteSha !== receivedSha) {
+    try {
+      await fsp.unlink(tmpPath);
+    } catch {}
+    return { ok: false, error: "expectedRemoteSha256 mismatch: received file sha differs", expected: expectedRemoteSha, actual: receivedSha };
+  }
+  // 若提供了 expectedRemoteSha256 且响应头已提供过，此处不再重复比对（已在 header 阶段比对），但仍可用 receivedSha 二次校验
+  if (expectedRemoteSha && responseInfo.remoteShaHeader && expectedRemoteSha !== receivedSha) {
+    // 响应头的 sha 与实际内容不一致，说明远端声明不可信
+    try {
+      await fsp.unlink(tmpPath);
+    } catch {}
+    return { ok: false, error: "received file sha does not match X-File-SHA256 header", expected: responseInfo.remoteShaHeader, actual: receivedSha };
+  }
+
+  // TOCTOU 复核：若目标已存在，确认未被改动
+  if (existed) {
+    try {
+      const re = await fsp.lstat(abs);
+      const inodeChanged = Boolean(beforeSt.ino && re.ino && beforeSt.ino !== re.ino);
+      if (inodeChanged || re.size !== beforeSt.size || re.mtimeMs !== beforeSt.mtimeMs) {
+        try {
+          await fsp.unlink(tmpPath);
+        } catch {}
+        return { ok: false, error: "target changed between verification and write; re-read it and retry" };
+      }
+      // 再核 sha（防御性）
+      const reSha = await sha256OfFile(abs);
+      if (reSha !== beforeSha) {
+        try {
+          await fsp.unlink(tmpPath);
+        } catch {}
+        return { ok: false, error: "target changed between verification and write; re-read it and retry" };
+      }
+    } catch (e) {
+      if (e.code !== "ENOENT") {
+        try {
+          await fsp.unlink(tmpPath);
+        } catch {}
+        return { ok: false, error: "lstat failed before rename: " + (e.code || e.message) };
+      }
+      // 文件在验证后被删了，且调用方原本是覆盖场景，视为 changed
+      try {
+        await fsp.unlink(tmpPath);
+      } catch {}
+      return { ok: false, error: "target changed between verification and write; re-read it and retry" };
+    }
+  }
+
+  // 原子重命名
+  try {
+    await fsp.rename(tmpPath, abs);
+  } catch (e) {
+    try {
+      await fsp.unlink(tmpPath);
+    } catch {}
+    return { ok: false, error: "rename failed: " + (e.code || e.message) };
+  }
+
+  // 最终校验
+  let finalSha = receivedSha;
+  try {
+    // 若 rename 成功，文件 sha 即 receivedSha；再算一次以确认落盘无损
+    finalSha = await sha256OfFile(abs);
+    if (finalSha !== receivedSha) {
+      return { ok: false, error: "sha mismatch after rename: disk content differs", expected: receivedSha, actual: finalSha };
+    }
+  } catch {}
+
+  let finalSize = bytesReceived;
+  try {
+    finalSize = (await fsp.stat(abs)).size;
+  } catch {}
+
+  return {
+    ok: true,
+    path: abs,
+    remoteUrl: u.toString(),
+    bytesReceived,
+    size: finalSize,
+    sha256: finalSha,
+    action: existed ? "overwritten" : "created",
+    remoteStatus: responseInfo.statusCode,
+  };
+}
+
 async function onLoad() {
   await pi.agent.registerTool({
     name: "read_desktop_file",
@@ -454,6 +1015,60 @@ async function onLoad() {
     },
     execute: async (args) => deleteDesktopFile(args),
   });
+
+  await pi.agent.registerTool({
+    name: "push_desktop_file_to_remote",
+    description:
+      "Push a desktop file to a remote HTTP(S) URL (bytes go over TLS, not through LLM context). Use for large/binary files where base64 via LLM is lossy. Requires explicit user authorization for the specific path and remoteUrl (remoteUrl is unrestricted — only call with a user-authorized destination; auth via Authorization: Bearer <token> header, token in URL is compatibility-only and will appear in logs). The file is streamed via node:http(s) with X-File-SHA256 header.",
+    risk: "high",
+    schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute path on the desktop to push" },
+        remoteUrl: {
+          type: "string",
+          description:
+            "Destination http(s) URL, e.g. http://127.0.0.1:9876/push/file.bin or https://example.com/dfr/push/file.bin (auth via Authorization: Bearer <token> header; putting token in URL is supported for compatibility but will appear in access logs — not recommended)",
+        },
+        token: {
+          type: "string",
+          description:
+            "Bearer token; sent as Authorization: Bearer <token> header if >=16 chars. Do not put token in the URL — it will appear in access logs. Path token /push/<token>/ is only for compatibility.",
+        },
+        expectedSha256: { type: "string", description: "Optional guard: sha256 of the current file; refused if it changed" },
+        timeoutMs: { type: "integer", description: "Request timeout in ms (5000-120000, default 60000)" },
+        method: { type: "string", description: "HTTP method PUT or POST (default PUT)" },
+      },
+      required: ["path", "remoteUrl"],
+    },
+    execute: async (args) => pushDesktopFileToRemote(args),
+  });
+
+  await pi.agent.registerTool({
+    name: "pull_remote_file_to_desktop",
+    description:
+      "Pull a remote HTTP(S) URL and save it to a desktop path (bytes go over TLS, not through LLM context). Use for large/binary files. Requires explicit user authorization for the specific path and remoteUrl (remoteUrl is unrestricted — only call with a user-authorized source; auth via Authorization header, token in URL is compatibility-only). Streams to a temp file then atomically renames.",
+    risk: "high",
+    schema: {
+      type: "object",
+      properties: {
+        remoteUrl: {
+          type: "string",
+          description:
+            "Source http(s) URL to GET, e.g. http://127.0.0.1:9876/pull/file.bin or https://example.com/dfr/pull/file.bin (auth via Authorization header; token in URL is compatibility-only and will appear in logs)",
+        },
+        path: { type: "string", description: "Absolute desktop destination path" },
+        token: { type: "string", description: "Bearer token; sent as Authorization: Bearer <token> header if >=16 chars. Do not put token in the URL." },
+        expectedRemoteSha256: { type: "string", description: "Optional guard: expected sha256 of the remote content" },
+        expectedSha256: { type: "string", description: "Required when overwriting: sha256 of the current target file" },
+        allowCreate: { type: "boolean", description: "Required when the file does not exist yet" },
+        timeoutMs: { type: "integer", description: "Request timeout in ms (5000-120000, default 60000)" },
+      },
+      required: ["remoteUrl", "path"],
+    },
+    execute: async (args) => pullRemoteFileToDesktop(args),
+  });
+
 }
 
 async function onUnload() {
@@ -461,6 +1076,8 @@ async function onUnload() {
   await pi.agent.unregisterTool("list_desktop_dir");
   await pi.agent.unregisterTool("write_desktop_file");
   await pi.agent.unregisterTool("delete_desktop_file");
+  await pi.agent.unregisterTool("push_desktop_file_to_remote");
+  await pi.agent.unregisterTool("pull_remote_file_to_desktop");
 }
 
 module.exports = { onLoad, onUnload };

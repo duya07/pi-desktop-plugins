@@ -75,11 +75,17 @@ const b64 = (s) => Buffer.from(s, "utf8").toString("base64");
   const del = registered.get("delete_desktop_file").execute;
 
   // ---- 注册 ---------------------------------------------------------------
+  // 0.4.0 起新增 2 个直传工具，旧测试仅校验旧 4 个仍存在（不做精确等式，避免因新增工具误判回归失败）
   await t("注册 4 个工具", () => {
-    assert.deepStrictEqual(
-      [...registered.keys()].sort(),
-      ["delete_desktop_file", "list_desktop_dir", "read_desktop_file", "write_desktop_file"]
-    );
+    const expectedOld = ["delete_desktop_file", "list_desktop_dir", "read_desktop_file", "write_desktop_file"];
+    for (const k of expectedOld) assert.ok(registered.has(k), "missing " + k);
+    // 0.4.0 新增：若为新版，顺带校验新工具也已注册
+    if (registered.size === 6) {
+      assert.ok(registered.has("push_desktop_file_to_remote"));
+      assert.ok(registered.has("pull_remote_file_to_desktop"));
+    } else {
+      assert.strictEqual(registered.size, 4);
+    }
   });
 
   // ---- read 回归 ----------------------------------------------------------

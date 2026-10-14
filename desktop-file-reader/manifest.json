@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "io.github.duya07.desktop-file-reader",
   "name": "桌面文件读写",
-  "version": "0.3.0",
-  "description": "让远端工作区的会话直接读写删桌面机上的文件（base64），不再依赖内置浏览器面板。",
+  "version": "0.4.0",
+  "description": "让远端工作区的会话直接读写删桌面机上的文件；0.4.0 新增 HTTP 直传（push/pull）让大文件字节不经 LLM 上下文。",
   "author": "duya07",
   "license": "MIT",
   "homepage": "https://github.com/duya07/pi-desktop-plugins",
@@ -111,6 +111,86 @@
             }
           },
           "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "push_desktop_file_to_remote",
+        "description": "Push a desktop file to a remote HTTP(S) URL (bytes go over TLS, not through LLM context). Use for large/binary files where base64 via LLM is lossy. Requires explicit user authorization for the specific path and remoteUrl (remoteUrl is unrestricted — only call with a user-authorized destination).",
+        "risk": "high",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Absolute path on the desktop to push"
+            },
+            "remoteUrl": {
+              "type": "string",
+              "description": "Destination http(s) URL, e.g. http://127.0.0.1:9876/push/file.bin or https://example.com/dfr/push/file.bin (auth via Authorization: Bearer <token> header; putting token in URL is supported for compatibility but will appear in access logs — not recommended)"
+            },
+            "token": {
+              "type": "string",
+              "description": "Bearer token; sent as Authorization: Bearer <token> header if >=16 chars. Do not put token in the URL — it will appear in access logs. Path token /push/<token>/ is only for compatibility."
+            },
+            "expectedSha256": {
+              "type": "string",
+              "description": "Optional guard: sha256 of the current file; refused if it changed"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "description": "Request timeout in ms (5000-120000, default 60000)"
+            },
+            "method": {
+              "type": "string",
+              "description": "HTTP method PUT or POST (default PUT)"
+            }
+          },
+          "required": [
+            "path",
+            "remoteUrl"
+          ]
+        }
+      },
+      {
+        "name": "pull_remote_file_to_desktop",
+        "description": "Pull a remote HTTP(S) URL and save it to a desktop path (bytes go over TLS, not through LLM context). Use for large/binary files. Requires explicit user authorization for the specific path and remoteUrl (remoteUrl is unrestricted — only call with a user-authorized source).",
+        "risk": "high",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "remoteUrl": {
+              "type": "string",
+              "description": "Source http(s) URL to GET, e.g. http://127.0.0.1:9876/pull/file.bin or https://example.com/dfr/pull/file.bin (auth via Authorization header; token in URL is compatibility-only and will appear in logs)"
+            },
+            "path": {
+              "type": "string",
+              "description": "Absolute desktop destination path"
+            },
+            "token": {
+              "type": "string",
+              "description": "Bearer token; sent as Authorization: Bearer <token> header if >=16 chars. Do not put token in the URL."
+            },
+            "expectedRemoteSha256": {
+              "type": "string",
+              "description": "Optional guard: expected sha256 of the remote content"
+            },
+            "expectedSha256": {
+              "type": "string",
+              "description": "Required when overwriting: sha256 of the current target file"
+            },
+            "allowCreate": {
+              "type": "boolean",
+              "description": "Required when the file does not exist yet"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "description": "Request timeout in ms (5000-120000, default 60000)"
+            }
+          },
+          "required": [
+            "remoteUrl",
             "path"
           ]
         }
