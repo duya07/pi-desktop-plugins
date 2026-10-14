@@ -19,12 +19,12 @@
 
 参考并适配作者发布的 `Len7183/DSH-Think-zh`（`f68c4ab06768aaec10a315712b3d15c9fa05ddaa`）与 `EmbOriented/DeepSeek-Thinking-CN`（`9dc0684267785c22cb4f646a45aafa0d61853cc0`）的明确语言条款。后者明确加入“从第一个词开始”和语言自纠。没有移植 DSH 的极小 order 置顶、宿主事件或改写用户消息的逐轮通道；不声称作者的演示是 PI 的实测结果。
 
-固定来源、取舍和本轮验证见 `D:/Pi/Chat/research/THINK-ZH-RESEARCH.md`。
+固定来源、取舍和本轮验证见 `<本仓库>/research/THINK-ZH-RESEARCH.md`。
 
 ## 检查与加载
 
 ```powershell
-Set-Location D:\Pi\Chat
+Set-Location <本仓库>
 node .\scripts\Test-ThinkZh.mjs
 ```
 
