@@ -21,9 +21,28 @@ PI-Desktop 的插件只能**声明式**注册 provider（`contributes.providers`
 PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插件网关 ──▶ Cline Pass (api.cline.bot)
 ```
 
+> **目录**
+>
+> 🚀 加载与首次使用  
+> 🧩 生成配置与生效路径  
+> 📊 用量账本  
+> 💳 官方额度（Cline 订阅窗口）  
+> 🔒 数据与隐私  
+> 🔌 端口  
+> 🤖 Agent 工具（10 个）  
+> 🖥️ 面板动作  
+> 📜 宿主契约（按 PI-Desktop 0.19.1 核对）  
+> 🛠️ 本轮修复（对照文档/宿主实现后改动）  
+> ✅ 自测  
+> 🔄 与 DSH 版的差异  
+> 🧪 验证状态  
+> 📦 来源
+
 ---
 
 ## 🚀 加载与首次使用
+
+从加载插件到第一次跑通，按下面六步依次来。
 
 ### 1 · 加载
 
@@ -241,6 +260,8 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 
 ## 🛠️ 本轮修复（对照文档/宿主实现后改动）
 
+这一节逐条记录对照开发说明与宿主实现之后的每处改动：根因、修法，以及如何验证。
+
 1. **`contributes.services[].label` 由 `{en, zh-CN}` 改为字符串**：宿主只校验 `service.id`，渲染时把 `label` 当文本，
    对象直接进 React children → 整页崩（minified error #31）。这是加载时把应用弄崩的那一处。
 2. **`contributes.providers[].category` / `.description` 由对象改为字符串**：校验器两种形态都收，但渲染侧
@@ -407,6 +428,8 @@ test 走 pin 链、账号 CRUD 不泄漏密钥、端口/状态一致性、
 ---
 
 ## 🧪 验证状态
+
+下面按验证状态逐条列出 —— 真机已验证、宿主库只读核对、尚未在真机点过的部分，各附证据。
 
 - 已验证（真机）：插件在 PI-Desktop 里加载并持续使用；`development.plugin.reloaded` 多次 `ok:true`、网关 `health` 正常；
   真实请求走通（非流式 `200`、`provider=deepseek`、`reasoning` 保留、`usage` 有值）；
