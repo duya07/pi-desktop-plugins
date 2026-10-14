@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "io.github.duya07.desktop-file-reader",
-  "name": "桌面文件读取",
-  "version": "0.2.0",
-  "description": "让远端工作区的会话直接读写桌面机上的文件（base64），不再依赖内置浏览器面板。",
+  "name": "桌面文件读写",
+  "version": "0.3.0",
+  "description": "让远端工作区的会话直接读写删桌面机上的文件（base64），不再依赖内置浏览器面板。",
   "author": "duya07",
   "license": "MIT",
   "homepage": "https://github.com/duya07/pi-desktop-plugins",
@@ -79,6 +79,39 @@
           "required": [
             "path",
             "contentBase64"
+          ]
+        }
+      },
+      {
+        "name": "delete_desktop_file",
+        "description": "Delete ONE regular file on the local (desktop) filesystem. Refuses directories (no recursion), symbolic links, filesystem roots, Windows/Program Files/ProgramData, .ssh/.gnupg/.aws/.pi-desktop and NTFS system files. Requires confirm:true plus expectedSha256 (preferred) or expectedSize taken from read_desktop_file/list_desktop_dir; the delete is refused if the file changed since. Use dryRun:true first to preview. Only use with explicit user authorization for the specific path.",
+        "risk": "high",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Absolute path of the single file to delete"
+            },
+            "confirm": {
+              "type": "boolean",
+              "description": "Must be true: explicit confirmation that the impact was reviewed"
+            },
+            "expectedSha256": {
+              "type": "string",
+              "description": "Preferred guard: sha256 of the current content (from read_desktop_file). Refused if it changed."
+            },
+            "expectedSize": {
+              "type": "integer",
+              "description": "Alternative guard for large files you did not read in full: current byte size (from list_desktop_dir)"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "description": "If true, only report what would be deleted; nothing is removed"
+            }
+          },
+          "required": [
+            "path"
           ]
         }
       }
