@@ -581,5 +581,39 @@ check(sent.length === sentBeforeSel, 'a click dropped by the busy lock sends no 
 check(selA.value === 'models.dev' && selB.value === 'models.dev',
   'and both selects go back to the live value instead of diverging for good (got ' + selA.value + ' / ' + selB.value + ')')
 allowBusy = true
-console.log('\n' + (failures === 0 ? 'ALL ' + total + ' MODEL CARD CHECKS PASSED' : failures + ' OF ' + total + ' MODEL CARD CHECK(S) FAILED'))
-process.exit(failures === 0 ? 0 : 1)
+
+/* 14. 面板打开时插件可能还在启动：一次 NO_GATEWAY 不该留一张空面板等用户点「刷新」。
+       这一组是异步的（refresh 返回 promise），所以由它自己收尾。 */
+const refreshStart = pageScript.indexOf('function refresh(attempt)')
+const refreshEnd = pageScript.indexOf('function loadHistory()')
+if (refreshStart < 0 || refreshEnd < 0) throw new Error('refresh() was not found in the panel script')
+let reads = 0
+const readResults = [
+  { ok: false, code: 'NO_GATEWAY', error: '还没就绪' },
+  { ok: false, code: 'NO_GATEWAY', error: '还没就绪' },
+  { ok: true, status: { models: [], catalogSource: 'models.dev' } },
+]
+const refreshApi = new Function('document', 'state', 'log', 'run', 'release', 'beginBusy', 'window', 'renderStatus', 'since',
+  pageScript.slice(refreshStart, refreshEnd) + '\nreturn { refresh: refresh };')(
+  doc, state, log, () => Promise.resolve(readResults[reads++]), (promise) => promise,
+  () => true, win, () => {}, () => '0.0')
+
+/* Each retry starts a fresh promise chain, so drive the timer and then let the
+   microtasks settle before asserting. */
+const settle = () => new Promise((resolve) => setImmediate(resolve))
+;(async () => {
+  state.status = null
+  const logsBeforeRefresh = logs.length
+  await refreshApi.refresh()
+  check(reads === 1, 'the first status read happens straight away')
+  check(timers.length > 0, 'a NO_GATEWAY answer is retried on the panel timer instead of being surfaced')
+  let guard = 0
+  while (timers.length > 0 && guard++ < 20) { timers.shift()(); await settle() }
+  check(reads === 3, 'it keeps asking until the gateway answers (got ' + reads + ' reads)')
+  check(state.status !== null && Array.isArray(state.status.models), 'and the panel ends up with the status it waited for')
+  check(!logs.slice(logsBeforeRefresh).some((line) => /失败，按钮已恢复/.test(line)),
+    'the user is never told to press 刷新 by hand')
+
+  console.log('\n' + (failures === 0 ? 'ALL ' + total + ' MODEL CARD CHECKS PASSED' : failures + ' OF ' + total + ' MODEL CARD CHECK(S) FAILED'))
+  process.exit(failures === 0 ? 0 : 1)
+})()

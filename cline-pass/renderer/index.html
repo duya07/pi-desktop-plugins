@@ -528,6 +528,7 @@
         <section id="tab-history" hidden>
           <div class="card">
             <h3>最近请求</h3>
+            <div class="hint">逐条列出网关处理过的请求，读的是和「用量」同一份落盘账本（<code>usage.jsonl</code>），所以插件重载后仍在。要看 token / 成本或汇总，去「用量」。</div>
             <div class="row">
               <input id="history-filter" placeholder="按模型过滤（可空）" style="width: 220px" />
               <button id="history-load">刷新</button>
@@ -604,6 +605,7 @@
           </div>
           <div class="card">
             <h3>最近请求明细</h3>
+            <div class="hint">和「请求历史」是同一批数据，这里额外给出总 tokens 与成本；完整列表和按模型过滤在「请求历史」。</div>
             <table>
               <thead>
                 <tr><th>时间（本地）</th><th>模型</th><th>通道</th><th>账号</th><th>状态</th><th>耗时</th><th>总 tokens</th><th>成本</th><th>备注</th></tr>
@@ -1047,7 +1049,11 @@
           if ((model.upstreams || []).length === 0) {
             var hint = document.createElement("span");
             hint.className = "hint";
-            hint.textContent = "还没有通道列表：点“探测通道”。";
+            // A probe that failed leaves `lastError` behind; saying so beats the flat
+            // "点探测通道", which reads the same whether you never probed or just failed.
+            hint.textContent = model.lastError
+              ? "还没有通道列表：上次探测失败（原因见上方），点“探测通道”重试。"
+              : "还没有通道列表：点“探测通道”。";
             chips.appendChild(hint);
           }
 
@@ -2071,12 +2077,21 @@
         }
 
         /** Read the whole panel state; used on first paint and after every action. */
-        function refresh() {
+        function refresh(attempt) {
           var label = "正在读取状态";
           if (!beginBusy(label, document.getElementById("refresh"))) return Promise.resolve(null);
           var started = Date.now();
+          // The panel opens the moment the host loads the plugin, which can be before
+          // the gateway service is up. Retry on our own instead of leaving an empty
+          // page and expecting the user to press 刷新.
+          var tries = typeof attempt === "number" ? attempt : 0;
           return release(run({ action: "status" }, 20000, true)).then(function (result) {
             if (!result || !result.status) {
+              if (result && result.code === "NO_GATEWAY" && tries < 6) {
+                log(label + "：网关还没起来，1 秒后自动重试（第 " + (tries + 1) + " 次）。");
+                window.setTimeout(function () { refresh(tries + 1); }, 1000);
+                return null;
+              }
               log(label + "：失败，按钮已恢复（可再点右上角“刷新”）。");
               return null;
             }

@@ -703,6 +703,13 @@ async function onPanelInvoke(channel, payload) {
   // down: `writeConfig` writes the generated config into a directory the user
   // picks, and the two host-ladder actions only read/write the host's own row.
   const offline = action === 'writeConfig' || action === 'syncHostLadder' || action === 'undoHostLadder'
+  // The panel opens the moment the host loads the plugin, which can be before the
+  // gateway service has finished starting. Answering with a sentence (and a code
+  // the panel can recognise) lets it retry by itself instead of showing an empty
+  // page and leaving the user to press 刷新.
+  if (!offline && !gateway) {
+    return { ok: false, code: 'NO_GATEWAY', error: startError || '网关还没就绪（插件正在启动），面板会自动重试。' }
+  }
   const gw = offline ? null : liveGateway()
   switch (action) {
     case 'status':

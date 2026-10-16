@@ -548,6 +548,71 @@ test('gateway fails over across accounts and benches the failed ones', async () 
   mock.state.forKey.clear()
 })
 
+test('request history reads the on-disk ledger, so it survives a reload', async () => {
+  // The in-memory store only lives for one run, which is why this tab stayed empty
+  // after every reload. A fresh gateway over the same data directory must see the
+  // rows the previous one wrote.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'piclinepass-hist-'))
+  const ledger = usageLog.createUsageLog({ dataDir: dir })
+  ledger.record({ ts: 1_700_000_000_000, model: 'cline-pass/deepseek-v4.1-flash', upstream: 'deepseek', account: 'a1', status: 200, ms: 123, stream: false })
+  ledger.record({ ts: 1_700_000_001_000, model: 'cline-pass/kimi-k3', upstream: 'kimi', account: 'a2', status: 429, ms: 45, stream: false })
+  const freshStore = createConfig({ dataDir: dir })
+  const fresh = createGateway({ configStore: freshStore, portOverride: 0 })
+  await fresh.start()
+  const history = fresh.ops.history({ limit: 10 })
+  assert.equal(history.size, 2, 'both rows are counted')
+  assert.equal(history.rows.length, 2)
+  assert.equal(history.rows[0].model, 'cline-pass/kimi-k3', 'newest first')
+  assert.equal(history.rows[0].status, 429, 'a failed request is kept too')
+  assert.equal(history.rows[1].account, 'a1')
+  assert.equal(fresh.ops.status().historySize, 2, 'the header count comes from the ledger as well')
+  assert.equal(fresh.ops.history({ limit: 10, model: 'kimi' }).rows.length, 1, 'the model filter still works')
+  await fresh.stop()
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('a probe in single-account mode stays on the account the user pinned', async () => {
+  // `single` deliberately answers with one account, so retrying would re-use the
+  // very same key and only burn the panel budget. What must hold is that the probe
+  // never reaches for a different account than the pinned one.
+  mock.state.forKey.clear()
+  await gateway.ops.accounts({ action: 'resetCooldowns' })
+  await gateway.ops.accounts({ action: 'mode', accountMode: 'single', activeAccount: 'a1' })
+  mock.state.forKey.set('key-a1', 'rate')
+  mock.state.requests.length = 0
+  const result = await gateway.ops.probe({ model: MODEL })
+  assert.equal(result.ok, false, 'the pinned account is rate limited, so the probe fails')
+  const asked = [...new Set(mock.state.requests.map((entry) => entry.key))]
+  assert.deepEqual(asked, ['key-a1'], 'only the pinned account was asked (got ' + asked.join(', ') + ')')
+  await gateway.ops.accounts({ action: 'mode', accountMode: 'roundrobin' })
+  await gateway.ops.accounts({ action: 'resetCooldowns' })
+  mock.state.forKey.clear()
+})
+
+test('a probe walks past rate-limited accounts instead of spending the whole click', async () => {
+  // One click used to burn on whatever account the pool handed out: with a
+  // weekly-limited account in the rotation the panel just showed 429. Every
+  // account limited here, so the retries are what prove it walked the pool.
+  mock.state.forKey.clear()
+  await gateway.ops.accounts({ action: 'resetCooldowns' })
+  mock.state.forKey.set('host-key', 'rate')
+  mock.state.forKey.set('key-a1', 'rate')
+  mock.state.forKey.set('key-a2', 'rate')
+  mock.state.requests.length = 0
+  const exhausted = await gateway.ops.probe({ model: MODEL })
+  assert.equal(exhausted.ok, false, 'every account limited means the probe still fails')
+  assert.ok(mock.state.requests.length >= 3,
+    'it asked more than one account before giving up (got ' + mock.state.requests.length + ')')
+  // One account answers: the probe must end on it rather than reporting failure.
+  mock.state.forKey.set('key-a2', 'ok')
+  mock.state.requests.length = 0
+  await gateway.ops.accounts({ action: 'resetCooldowns' })
+  const result = await gateway.ops.probe({ model: MODEL })
+  assert.equal(result.ok, true, 'a usable account in the pool is found')
+  await gateway.ops.accounts({ action: 'resetCooldowns' })
+  mock.state.forKey.clear()
+})
+
 test('gateway injects the configured pin into the upstream request', async () => {
   gateway.ops.pin({ model: MODEL, upstreams: ['beta'], pinMode: 'strict' })
   mock.state.requests.length = 0

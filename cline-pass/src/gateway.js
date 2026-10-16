@@ -500,7 +500,7 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
       maxConcurrentRequests: config.maxConcurrentRequests,
       inFlight: semaphore.active,
       queued: semaphore.pending,
-      historySize: store.historySize(),
+      historySize: ledger.summary({ days: 0 }).rows,
       quota: quotaCache === null ? null : { fetchedAt: quotaCache.at, accounts: quotaCache.accounts.map(summarizeAccount) },
       models: effectiveModels(config.modelSettings, config.catalogSource, hostModels()).map((model) => {
         const discovered = meta.find((candidate) => candidate.id === model.id) ?? {}
@@ -685,8 +685,13 @@ function createGateway({ configStore, logger = () => {}, instanceId = '', portOv
       }
     },
     history({ limit, model } = {}) {
-      const size = store.historySize()
-      return { size, rows: store.readHistory(Number.isFinite(Number(limit)) ? Number(limit) : 50, model ?? '') }
+      // Read the same ledger the 用量 tab sums, instead of the in-memory store: the
+      // ledger is on disk, so rows survive a plugin reload. The in-memory copy only
+      // lives for one run, which is why this tab was empty every time the panel was
+      return {
+        size: ledger.summary({ days: 0 }).rows,
+        rows: ledger.recent({ limit: Number.isFinite(Number(limit)) ? Number(limit) : 50, model: model ?? '' }),
+      }
     },
     async accounts({ action, name, renameTo, displayName, source, key, enabled, accountMode, activeAccount, model, apiKey } = {}) {
       const config = configStore.get()

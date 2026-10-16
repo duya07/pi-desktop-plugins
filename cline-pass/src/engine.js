@@ -366,11 +366,15 @@ function createEngine({ resolveAccount, store, logger = () => {}, attemptTimeout
     }
   }
 
+  /** Upstream verdicts a different account could plausibly get past. */
+  const RETRYABLE_PROBE_STATUS = new Set([429, 500, 502, 503, 504])
+  const PROBE_ATTEMPTS = 3
+
   /**
    * Probe one model: detect its pipeline, read back the upstream that served
    * it, and harvest the channel list each pipeline publishes.
    */
-  async function probe(model, { signal, timeoutMs = attemptTimeoutMs } = {}) {
+  async function probeOnce(model, { signal, timeoutMs = attemptTimeoutMs } = {}) {
     const account = await resolveAccount()
     const started = Date.now()
     const { result, payload, failed, note } = await completionWithStreamFallback({
@@ -389,7 +393,7 @@ function createEngine({ resolveAccount, store, logger = () => {}, attemptTimeout
       // back with nothing to parse.
       const message = errorText(payload?.error) || result.text.slice(0, 200) || `HTTP ${result.status}`
       store.learn(model, { ok: false, lastError: message, lastMs: ms })
-      return { ok: false, ms, model, error: message }
+      return { ok: false, status: result.status, account: account.name, ms, model, error: message }
     }
     const routing = parseRouting(payload)
     const pipeline = routing.pipeline
@@ -441,6 +445,32 @@ function createEngine({ resolveAccount, store, logger = () => {}, attemptTimeout
       upstreams: meta.upstreams ?? [],
       availableProviders: meta.availableProviders ?? [],
     }
+  }
+
+  /**
+   * Probe a model, retrying the verdicts another account could get past.
+   *
+   * One click used to be spent on whatever account the pool handed out: with a
+   * weekly-limited account in the rotation the probe answered 429 and the user had
+   * to press the button again until a usable account came up. `roundrobin` hands out
+   * a different account each round, so retrying gets past that.
+   *
+   * `single` mode is the opposite: the pool deliberately answers with the account
+   * the user pinned, so a retry would re-use the very same key and only burn the
+   * panel's budget. The loop stops as soon as the pool repeats an account.
+   */
+  async function probe(model, { signal, timeoutMs = attemptTimeoutMs } = {}) {
+    let last = null
+    for (let attempt = 1; attempt <= PROBE_ATTEMPTS; attempt += 1) {
+      const outcome = await probeOnce(model, { signal, timeoutMs })
+      if (outcome.ok === true) return outcome
+      const retryable = RETRYABLE_PROBE_STATUS.has(outcome.status)
+      const repeated = last !== null && last.account === outcome.account
+      last = outcome
+      if (!retryable || repeated || attempt === PROBE_ATTEMPTS) return outcome
+      logger('probe retrying', { model, status: outcome.status, account: outcome.account, attempt })
+    }
+    return last
   }
 
   /**

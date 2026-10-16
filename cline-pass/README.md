@@ -39,7 +39,7 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 | 8 | 🔌 端口 | 单一常量 `GATEWAY_PORT` 与本机校验 |
 | 9 | 📜 宿主契约 | 0.19.1 硬约束与本插件对照表 |
 | 10 | 🔄 与 DSH 版的差异 | 接法、档位、密钥、面板桥、额度缓存 |
-| 11 | 🛠️ 本轮修复 | 37 条变更记录（按主题分组，编号与顺序不变） |
+| 11 | 🛠️ 本轮修复 | 39 条变更记录（按主题分组，编号与顺序不变） |
 | 12 | ✅ 自测 | `57/57`、`45`、`68` 等断言与命令 |
 | 13 | 🧪 验证状态 | 已验证 / 未验证 / 待实测 的逐条证据 |
 | 14 | 📦 来源 | DSH 0.2.5-p3 MIT 移植说明 |
@@ -244,7 +244,7 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 
 ---
 
-## 🛠️ 本轮修复（对照文档 / 宿主实现后改动，37 条）
+## 🛠️ 本轮修复（对照文档 / 宿主实现后改动，39 条）
 
 > 本节逐条记录对照开发说明与宿主实现之后的每处改动：根因、修法，以及如何验证。编号与先后顺序保持不变，按主题分组便于检索。
 
@@ -344,6 +344,14 @@ PI-Desktop ──POST http://127.0.0.1:41593/v1/chat/completions──▶ 本插
 >
 > **⑥ 独立评审后的四处修复（`code-reviewer` 只读评审，我逐条核验后采纳）**：① **面板忙时两处下拉会永久分歧** —— `setCatalogSource` 在 `beginBusy` 失败时直接 `return`，而浏览器已经把被点的那个 `<select>` 的原生值改了、这次既不提交也不刷新，两处会一直显示不同的值。现在失败分支先 `renderCatalogSource(state.status)` 把两处拨回当前生效值。② **批量保存无上限重试** —— `busy.active` 长期为 true 时 `step` 每 200 ms 自调度、永远不打结束行（**实测**：去掉上限后测试进程 8 秒仍不终止，只能硬杀）。现在有 60 秒总上限，超时写一行「批量保存中止」。③ **提交可能落在已脱离文档的旧表单上** —— 保存一张卡会让 status 回来、面板可能重建那张卡的 DOM；`step` 现在每一步按 `data-model` 在**当前文档**里取节点，而不是用开始时抓的那批引用。④ **`panel-wiring` 第 9 组断言可被绕过** —— 原来断言 `!/entry\.open = model\.id === state\.model/`，若改成 `… === true || model.id === state.model` 仍会通过；现在取整行断言，并要求该行不出现 `state.model`。**新增测试**：`render-model-card.cjs` **84** 条（+7：忙时不抢锁只排队、越过 60 秒中止并说明、两处下拉同步与忙时回滚）。**负向对照**：去掉回滚 → 1 条 FAIL（打印出 `models.dev / cline-pass` 的分歧）；去掉 60 秒上限 → 进程不终止（8 秒硬杀验证）。
 
+### Q 组 · 首次打开面板与探测通道（38）
+
+38. **面板首次打开不再需要手动刷新 + 探测会走完账号池（用户报「一开面板得先 reload」「探测通道探不出来」）**：① **首次打开的真根因** —— `main.js` 的 `liveGateway()` 在网关服务尚未起来时**抛** `the plugin is not loaded`，而 `case 'status'` 直接 `gw.ops.status(...)`；面板刚打开（宿主加载插件那一刻）拿不到 status，于是留一张空面板，等你点「刷新」时网关已经起来，看起来就像"得先 reload 一次"。现在未就绪时返回 `{ ok: false, code: 'NO_GATEWAY', error: '网关还没就绪（插件正在启动），面板会自动重试。' }`，面板的 `refresh()` 认这个 code **自己重试**（1 秒一次、最多 6 次），不再把这件事丢给用户。② **「探测通道探不出来」的真因不是渲染** —— 实测运行中网关的 status 是 `upstreams: []`、`probedAt: 0`、`pipeline: null`、`lastError: "Error 429: You have reached your weekly Clinepass limit…"`，且 `gateway.log` 里**没有**对应的 `probe complete`（只有 10-15 的旧记录）。也就是说探测**确实失败了**，原因是账号额度（三个内联账号里两个 weekly 已 100%）。旧行为把一次点击耗在**池里第一个**账号上：429 就结束，得反复点直到轮到可用账号。现在 `engine.probe` 拆成 `probeOnce` + 重试包装，`429/500/502/503/504` 会**换账号重试**（账号池是 round-robin，每次拿到不同的），最多 3 次，日志有 `probe retrying`。③ **面板措辞** —— 「还没有通道列表」原来与"从没探测过"同义；现在有 `lastError` 时写「上次探测失败（原因见上方），点"探测通道"重试」。**测试**：`gateway.test.mjs` **58**（+1：三个账号全限流时探测仍失败但请求数 ≥3，证明它走完了池子；有一个可用时探测成功）、`render-model-card.cjs` **89**（+5：`NO_GATEWAY` 时自动重试、最终拿到 status、日志里不出现"失败，按钮已恢复"）。**负向对照**：`PROBE_ATTEMPTS` 改回 1 → 6 条 FAIL（含新测试）；去掉面板重试分支 → 4 条 FAIL。
+
+### R 组 · 请求历史与账号模式的贯穿（39）
+
+39. **「请求历史」改读落盘账本 + 探测遵守账号模式（用户报「请求历史从来没有显示过东西」「固定/轮询没有贯穿」）**：① **请求历史为空的真因** —— 同一次请求被记了两遍：内存的 `store.history`（`store.record`，4 处调用）与落盘的 `usage.jsonl`（`ledger.record`，同样 4 处）。面板「请求历史」读前者、「用量 → 最近请求明细」读后者，于是**插件一重载，请求历史就永远是空的**（`status.historySize` 也一直显示 0）。现在 `ops.history()` 与 `status.historySize` 都改读账本（`ledger.recent()` / `ledger.summary({ days: 0 }).rows`），两个 tab 共用同一份数据；面板上写明分工：请求历史 = 逐条 + 可按模型过滤，用量 = 汇总 + 带 token/成本的最近明细。② **探测没有贯穿账号模式** —— `pool.resolve()` 本身遵守 `single`（固定账号）/`roundrobin`（轮换），但上一轮加的探测重试是**无条件**的：`single` 模式下每次都会拿到**同一个**账号，重试 3 次等于把同一把钥匙插 3 遍（真机上会因此把面板预算耗在一个已知 429 的账号上）。现在 `probeOnce` 回报用了哪个账号，包装层发现**池子给回同一个账号就停**（`probe retrying` 只在真的换了账号时出现）。③ **真实额度证据** —— 运行中网关的 `ops.quota`：`xianglingwk` weekly 已用 100%（3 天 8 小时后重置）、`zzzawv` weekly 已用 100%（7 小时 45 分后重置）、`6636013` weekly 45% 可用；所以轮询模式下探测应当能走到可用账号，固定模式下则必须只用你选的那个。**测试**：`gateway.test.mjs` **60**（+2：新建 gateway 读同一 dataDir 仍能看到账本里的两行、最新在前、失败的请求也保留；`single` 模式下探测只问被固定的那个账号）。**证据强度说明**：这两条的负向对照（把 `ops.history` 改回内存版 / 去掉重复账号检查）**未取得干净 FAIL** —— 改回旧行为会让整个测试套件挂起（后续测试在失败状态下等到 300 秒流超时），只能拿到"挂起"而非"FAIL"；因此这里保留的是正向证据加代码事实（新 gateway 实例的内存 store 必为空），而"挂起"本身也说明不检查重复账号会让面板卡住。
+
 ---
 
 ## ✅ 自测
@@ -401,6 +409,8 @@ node test/panel-wiring.cjs             # 面板接线：脚本要的 id/class �
 | 修正（同一轮） | 「模型参数」节的第一版被**整节**搬进「模型与通道」，用户纠正后拆回：「模型与通道」只放模型列表卡（`#model-list-card` 含 `#model-settings-list`），「导入与参数」放生成配置 + 宿主档位 + 模型参数（数值来源 + 说明）。几何复测（headless Chrome，900 / 1330 宽 × 展开）：`#tab-import` 三个节与 `#model-list-card` 的 `.hint`、`<details>` 左右边界全部一致（1330 下 `[31,1266]`），无横向溢出；`panel-wiring` 第 7 组断言同步更新。离线验证：`gateway` **57/57**、`host-ladder` 45、`render-model-card` **70**、`render-import-config` 40、`render-host-sync` 25、`host-sync`/`render-quota`/`panel-wiring` OK、`node --check` 0 失败。 |
 | 修正（同一轮，补按钮） | 模型列表搬走后「模型参数」节没有提交入口（用户「第二个卡片的按钮呢」）：新增批量「保存模型参数」（`#save-all-models`）—— `modelSettingsCard()` 暴露 `entry._save`，按钮遍历 `#model-settings-list` 逐个触发，未改动的被 `saveModel` 跳过，面板同一时刻只调用一次（其余排队等 `busy`）。`render-model-card.cjs` 新增 7 条断言（**77**），负向对照（空操作）→ 3 FAIL。 |
 | 本轮新增（2026-10-14，独立评审后的四处修复） | `code-reviewer` 只读评审 + 我逐条核验：① `setCatalogSource` 在 busy 冲突时把两处下拉拨回当前生效值（原来会永久分歧）；② `saveAllModelParams` 加 60 秒总上限（原来会无限自调度）；③ 每步按 `data-model` 取**当前文档**节点（避免提交已脱离文档的旧表单）；④ `panel-wiring` 第 9 组改成整行断言（原来可被 `|| model.id === state.model` 绕过）。`render-model-card` **84**（+7）。负向对照：去回滚 → 1 FAIL；去上限 → 进程不终止（8 秒硬杀验证）。 |
+| 本轮新增（2026-10-16，首次打开面板 + 探测通道） | ① `main.js` 网关未就绪时返回 `code:'NO_GATEWAY'` 而不是抛错，面板 `refresh()` 认这个 code 自动重试（1 秒 × 最多 6 次）—— 原来会留一张空面板等用户点「刷新」。② `engine.probe` 拆成 `probeOnce` + 重试包装，429/5xx 换账号重试最多 3 次 —— 原来一次点击耗在池里第一个账号上（实测 status `upstreams:[]`、`probedAt:0`、`lastError:429`，`gateway.log` 无 `probe complete`）。③ 「还没有通道列表」在有 `lastError` 时改说「上次探测失败…重试」。`gateway` **58**、`render-model-card` **89**、其余不变。负向对照：`PROBE_ATTEMPTS=1` → 6 FAIL；去掉面板重试 → 4 FAIL。**真机待验证**：重载后首次打开面板应自动等到状态；有账号限流时探测应能走完池子。 |
+| 本轮新增（2026-10-16，请求历史与账号模式） | ① 「请求历史」原本读**内存** `store.history`（重载即清空，所以永远是空的），「用量 → 最近请求明细」读**落盘** `usage.jsonl`；同一份数据两个来源。现在 `ops.history()` 与 `status.historySize` 都读账本，两 tab 共用数据并在面板写明分工。② `engine.probe` 的重试原来**无条件**换账号，`single`（固定账号）模式下每次拿到的都是同一个，重试只浪费时间；现在 `probeOnce` 回报账号，池子给回同一个就停。`gateway` **60**（+2：跨实例仍能看到账本行、`single` 模式只问固定账号）。负向对照未取得干净 FAIL（旧行为会让套件挂起），已在正文说明证据强度。 |
 
 ---
 
